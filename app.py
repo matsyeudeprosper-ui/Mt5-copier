@@ -1,86 +1,151 @@
 import os
 import json
+import sqlite3
 import logging
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+import io
+import csv
 
 # === CONFIGURATION ===
-# Read the secret key from environment variables (set on Render)
-SECRET_KEY = os.environ.get("COP_SECRET_KEY", "change_this_in_production")
+SECRET_KEY = os.environ.get("COP_SECRET_KEY", "change_me_in_render")
+DB_PATH = "/tmp/trades.db"   # Ephemeral on Render free tier, but fast
 
 app = Flask(__name__)
-
-# Configure logging (Render will show these logs)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === HELPER: Validate auth header ===
+# === DATABASE INIT ===
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT,
+            magic TEXT,
+            ticket TEXT,
+            symbol TEXT,
+            type TEXT,
+            volume REAL,
+            open_price REAL,
+            sl REAL,
+            tp REAL,
+            close_profit REAL,
+            comment TEXT,
+            timestamp TEXT,
+            received_at TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    logger.info("Database ready at %s", DB_PATH)
+
+def save_trade(data):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO trades (
+            action, magic, ticket, symbol, type, volume, open_price, sl, tp,
+            close_profit, comment, timestamp, received_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data.get("action"),
+        str(data.get("magic", "")),
+        str(data.get("ticket", "")),
+        data.get("symbol", ""),
+        data.get("type", ""),
+        data.get("volume"),
+        data.get("open_price"),
+        data.get("sl"),
+        data.get("tp"),
+        data.get("close_profit"),
+        data.get("comment", ""),
+        data.get("timestamp", ""),
+        datetime.now().isoformat()
+    ))
+    conn.commit()
+    conn.close()
+
+def get_trades_since(since_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM trades WHERE id > ? ORDER BY id ASC", (since_id,))
+    rows = c.fetchall()
+    conn.close()
+    # Convert to list of dicts
+    columns = ["id","action","magic","ticket","symbol","type","volume","open_price",
+               "sl","tp","close_profit","comment","timestamp","received_at"]
+    trades = []
+    for row in rows:
+        trades.append(dict(zip(columns, row)))
+    return trades
+
+# === AUTHENTICATION ===
 def is_authorized():
     auth = request.headers.get("X-Auth-Token")
-    if not auth or auth != SECRET_KEY:
-        logger.warning(f"Unauthorized attempt from {request.remote_addr}")
-        return False
-    return True
+    return auth == SECRET_KEY
 
-# === HEALTH CHECK (GET) ===
+# === ENDPOINTS ===
 @app.route("/", methods=["GET"])
 @app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "alive", "message": "Trade copier server is running"})
+def health():
+    return jsonify({"status": "alive", "db": DB_PATH})
 
-# === MAIN ENDPOINT FOR TRADE EVENTS ===
 @app.route("/copier", methods=["POST"])
-def handle_trade_event():
-    # 1. Authentication
+def receive_trade():
+    """Called by your MT5 sender EA"""
+    if not is_authorized():
+        return jsonify({"error": "Unauthorized"}), 401
+    if not request.is_json:
+        return jsonify({"error": "JSON required"}), 400
+
+    data = request.get_json()
+    logger.info("Received: %s", json.dumps(data))
+
+    action = data.get("action")
+    if action not in ("open", "close", "modify"):
+        return jsonify({"error": "Invalid action"}), 400
+
+    save_trade(data)
+    return jsonify({"status": "ok", "stored": True}), 200
+
+@app.route("/trades", methods=["GET"])
+def get_new_trades():
+    """Called by your MT5 receiver EA to fetch pending trades"""
     if not is_authorized():
         return jsonify({"error": "Unauthorized"}), 401
 
-    # 2. Parse JSON body
-    if not request.is_json:
-        return jsonify({"error": "Content-Type must be application/json"}), 400
+    since_id = request.args.get("since_id", default=0, type=int)
+    trades = get_trades_since(since_id)
+    return jsonify({"since_id": since_id, "trades": trades}), 200
 
-    data = request.get_json()
-    logger.info(f"Received: {json.dumps(data)}")
+@app.route("/export", methods=["GET"])
+def export_csv():
+    """Download all trades as CSV for later analysis"""
+    if not is_authorized():
+        return "Unauthorized", 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM trades ORDER BY id")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        return "No trades yet", 404
 
-    # 3. Basic validation
-    if "action" not in data:
-        return jsonify({"error": "Missing 'action' field"}), 400
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id","action","magic","ticket","symbol","type","volume","open_price",
+                     "sl","tp","close_profit","comment","timestamp","received_at"])
+    writer.writerows(rows)
+    return output.getvalue(), 200, {
+        "Content-Type": "text/csv",
+        "Content-Disposition": "attachment;filename=trades.csv"
+    }
 
-    action = data["action"]
+# === START ===
+init_db()
 
-    # 4. Process based on action (you can add your own logic here)
-    try:
-        if action == "open":
-            # Expected fields: magic, symbol, ticket, type, volume, open_price, sl, tp, comment, timestamp
-            required = ["magic", "symbol", "ticket", "type", "volume", "open_price", "timestamp"]
-            for field in required:
-                if field not in data:
-                    return jsonify({"error": f"Missing '{field}' for open action"}), 400
-            logger.info(f"OPEN POSITION: {data['symbol']} {data['type']} {data['volume']} @ {data['open_price']}")
-
-        elif action == "close":
-            # Expected: magic, ticket, close_profit, timestamp
-            if "ticket" not in data:
-                return jsonify({"error": "Missing 'ticket' for close action"}), 400
-            logger.info(f"CLOSE POSITION: ticket {data['ticket']}, profit {data.get('close_profit',0)}")
-
-        elif action == "modify":
-            # Expected: magic, ticket, sl, tp, timestamp
-            if "ticket" not in data:
-                return jsonify({"error": "Missing 'ticket' for modify action"}), 400
-            logger.info(f"MODIFY POSITION: ticket {data['ticket']}, new SL={data.get('sl')}, new TP={data.get('tp')}")
-
-        else:
-            return jsonify({"error": f"Unknown action '{action}'"}), 400
-
-        # 5. Respond success
-        return jsonify({"status": "ok", "received": True}), 200
-
-    except Exception as e:
-        logger.exception("Error processing request")
-        return jsonify({"error": "Internal server error"}), 500
-
-# === RUN (only when executed directly, not used by gunicorn) ===
 if __name__ == "__main__":
-    # For local testing
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # For local testing only – Render uses gunicorn
+    app.run(host="0.0.0.0", port=5000, debug=False)
