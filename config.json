@@ -43,8 +43,8 @@
       "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous."
     },
     "help": {
-      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/status - Check your license status\n/unbind - Unbind your MT5 account (allows switching)\n/help - Show this help\n/daily - Daily trading report\n/weekly - Weekly trading report\n/monthly - Monthly trading report\n/alltime - All‑time report\n/setbalance - Set your starting balance\n/deposit - Add a deposit\n\nYou can also use the buttons below.",
-      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/daily - Rapport journalier\n/weekly - Rapport hebdomadaire\n/monthly - Rapport mensuel\n/alltime - Rapport depuis le début\n/setbalance - Définir votre solde initial\n/deposit - Ajouter un dépôt\n\nVous pouvez aussi utiliser les boutons ci-dessous."
+      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report (daily/weekly/monthly/all time)\n/setbalance - Set your starting balance\n/deposit - Add a deposit\n\nYou can also use the buttons below.",
+      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/setbalance - Définir votre solde initial\n/deposit - Ajouter un dépôt\n\nVous pouvez aussi utiliser les boutons ci-dessous."
     },
     "main_menu": {
       "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
@@ -117,6 +117,26 @@
     "invalid_plan": {
       "en": "Invalid plan. Use main menu to try again.",
       "fr": "Formule invalide. Utilisez le menu principal pour réessayer."
+    },
+    "report_menu_title": {
+      "en": "📈 *Trading Report*\n\nSelect the period:",
+      "fr": "📈 *Rapport de trading*\n\nChoisissez la période :"
+    },
+    "report_daily_btn": {
+      "en": "Daily",
+      "fr": "Quotidien"
+    },
+    "report_weekly_btn": {
+      "en": "Weekly",
+      "fr": "Hebdomadaire"
+    },
+    "report_monthly_btn": {
+      "en": "Monthly",
+      "fr": "Mensuel"
+    },
+    "report_alltime_btn": {
+      "en": "All time",
+      "fr": "Depuis le début"
     },
     "report_daily": {
       "en": "📊 *Daily Trading Report*",
