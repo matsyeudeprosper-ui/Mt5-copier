@@ -36,7 +36,6 @@ def init_db():
         license_key TEXT PRIMARY KEY,
         telegram_chat_id TEXT,
         bound_account TEXT,
-        last_switch_at TEXT,
         activated_at TEXT,
         expires_at TEXT,
         is_master INTEGER DEFAULT 0,
@@ -61,12 +60,12 @@ def init_db():
     if existing:
         if existing[0] != MASTER_KEY:
             c.execute("DELETE FROM licenses WHERE is_master = 1")
-            c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, last_switch_at, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                      (MASTER_KEY, "master", None, None, datetime.now().isoformat(), None, 1, 1))
+            c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                      (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1))
             logger.info(f"Master key updated to {MASTER_KEY}")
     else:
-        c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, last_switch_at, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                  (MASTER_KEY, "master", None, None, datetime.now().isoformat(), None, 1, 1))
+        c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1))
 
     conn.commit()
     conn.close()
@@ -102,8 +101,8 @@ def activate_license(telegram_chat_id, expires_days):
     expires_at = None if expires_days is None else (datetime.now() + timedelta(days=expires_days)).isoformat()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, last_switch_at, activated_at, expires_at, is_master, is_active)
-                 VALUES (?, ?, ?, ?, ?, ?, 0, 1)''', (license_key, telegram_chat_id, None, None, activated_at, expires_at))
+    c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active)
+                 VALUES (?, ?, ?, ?, ?, 0, 1)''', (license_key, telegram_chat_id, None, activated_at, expires_at))
     conn.commit()
     conn.close()
     return license_key, expires_at
@@ -136,31 +135,23 @@ def is_license_valid(license_key, require_master=False, mt5_account=None):
         if expires_at and datetime.now() > datetime.fromisoformat(expires_at):
             conn.close()
             return False
-        # Handle account binding / switching
+        # Binding logic: only allow if no bound_account yet, or if provided account matches
         if mt5_account is not None:
             if bound_account is None:
-                # First time binding
-                c.execute("UPDATE licenses SET bound_account = ?, last_switch_at = ? WHERE license_key = ?",
-                          (mt5_account, datetime.now().isoformat(), license_key))
-                conn.commit()
-                # Log activation
+                # First bind
+                c.execute("UPDATE licenses SET bound_account = ? WHERE license_key = ?", (mt5_account, license_key))
                 c.execute("INSERT INTO license_activations (license_key, mt5_account, action, created_at) VALUES (?, ?, ?, ?)",
                           (license_key, mt5_account, "bind", datetime.now().isoformat()))
                 conn.commit()
                 conn.close()
                 return True
-            elif bound_account != mt5_account:
-                # Account switch – allow it, but notify admin and log
-                old_account = bound_account
-                c.execute("UPDATE licenses SET bound_account = ?, last_switch_at = ? WHERE license_key = ?",
-                          (mt5_account, datetime.now().isoformat(), license_key))
-                c.execute("INSERT INTO license_activations (license_key, mt5_account, action, created_at) VALUES (?, ?, ?, ?)",
-                          (license_key, mt5_account, "switch_from_" + str(old_account), datetime.now().isoformat()))
-                conn.commit()
+            elif bound_account == mt5_account:
                 conn.close()
-                # Notify admin about the switch
-                notify_admin(f"🔄 License {license_key} switched from {old_account} to {mt5_account}.")
                 return True
+            else:
+                # Mismatch – reject
+                conn.close()
+                return False
         conn.close()
         return True
 
@@ -238,13 +229,15 @@ def telegram_webhook():
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "").lower()
         if text == "/start":
-            send_telegram(chat_id, "Welcome to MT5 Trade Copier!\nUse /buy to purchase a license.\nUse /status to check your license bound account and expiry.")
+            send_telegram(chat_id, "Welcome to MT5 Trade Copier!\nUse /buy to purchase a license.\nUse /status to check your license.\nUse /unbind to release the bound MT5 account (allows a new account to bind).")
         elif text == "/buy":
             show_plan_selection(chat_id)
         elif text == "/status":
             check_license_status(chat_id)
+        elif text == "/unbind":
+            unbind_license(chat_id)
         else:
-            send_telegram(chat_id, "Unknown command. Available: /buy, /status")
+            send_telegram(chat_id, "Unknown command. Available: /buy, /status, /unbind")
     elif "callback_query" in update:
         query = update["callback_query"]
         chat_id = query["message"]["chat"]["id"]
@@ -277,8 +270,32 @@ def check_license_status(chat_id):
         return
     license_key, bound_account, expires_at = row
     expiry_str = expires_at if expires_at else "Never"
-    bound_str = bound_account if bound_account else "Not yet bound (will be set on first use)"
-    send_telegram(chat_id, f"🔑 <b>Your License</b>\n\nKey: <code>{license_key}</code>\nBound MT5 account: {bound_str}\nExpires: {expiry_str}\n\nIf you need to switch to a different MT5 account, simply start your EA with the new account – the license will automatically rebind (admin will be notified).")
+    bound_str = bound_account if bound_account else "Not yet bound (will be set on first EA start)"
+    msg = f"🔑 <b>Your License</b>\n\nKey: <code>{license_key}</code>\nBound MT5 account: {bound_str}\nExpires: {expiry_str}\n\nTo switch to a different MT5 account, use /unbind first, then start your EA on the new account."
+    send_telegram(chat_id, msg)
+
+def unbind_license(chat_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT license_key, bound_account FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        send_telegram(chat_id, "You don't have an active license. Use /buy to purchase one.")
+        return
+    license_key, bound_account = row
+    if bound_account is None:
+        send_telegram(chat_id, "Your license is not bound to any account. Nothing to unbind.")
+        conn.close()
+        return
+    # Unbind
+    c.execute("UPDATE licenses SET bound_account = NULL WHERE license_key = ?", (license_key,))
+    c.execute("INSERT INTO license_activations (license_key, mt5_account, action, created_at) VALUES (?, ?, ?, ?)",
+              (license_key, bound_account, "unbind", datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+    send_telegram(chat_id, f"✅ License unbound from account {bound_account}. You can now start your EA on a new MT5 account – it will automatically bind to that account.")
+    notify_admin(f"🔄 User {chat_id} unbound license {license_key} from account {bound_account}.")
 
 # ==================== NOWPAYMENTS INVOICE CREATION ====================
 def create_payment_invoice(chat_id, plan):
@@ -373,10 +390,8 @@ def nowpayments_webhook():
             c.execute("UPDATE orders SET license_key = ?, status = 'completed' WHERE order_id = ?", (license_key, order_id))
             conn.commit()
             expiry_str = expires_at if expires_at else "Never"
-            # Send key to user
-            msg = f"✅ Payment confirmed!\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.\n\nYou can check your license status anytime with /status."
+            msg = f"✅ Payment confirmed!\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.\n\nYou can check your license status anytime with /status.\nTo switch MT5 accounts, first use /unbind, then start EA on the new account."
             send_telegram(chat_id, msg)
-            # Notify admin
             notify_admin(f"🎉 New license sold!\nUser: {chat_id}\nPlan: {plan}\nKey: {license_key}\nExpires: {expiry_str}")
         else:
             logger.warning(f"Order not found: {order_id}")
@@ -396,10 +411,9 @@ def payment_success():
 def payment_cancel():
     return "<h1>Payment cancelled. No license issued.</h1>"
 
-# ==================== VALIDATION ENDPOINT (with auto-switch) ====================
+# ==================== VALIDATION ENDPOINT (for receiver EA) ====================
 @app.route("/validate", methods=["POST"])
 def validate_license():
-    """Called by receiver EA to validate license and account."""
     if not request.is_json:
         return jsonify({"error": "JSON required"}), 400
     data = request.get_json()
@@ -410,12 +424,10 @@ def validate_license():
     if not mt5_account:
         return jsonify({"allowed": False, "message": "MT5 account missing"}), 200
 
-    # Check validity (this will also handle binding/switching)
     valid = is_license_valid(license_key, require_master=False, mt5_account=mt5_account)
     if not valid:
-        return jsonify({"allowed": False, "message": "Invalid or expired license"}), 200
+        return jsonify({"allowed": False, "message": "Invalid or expired license, or wrong MT5 account (use /unbind on Telegram to reset)"}), 200
 
-    # Get expiry for response
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT expires_at FROM licenses WHERE license_key = ?", (license_key,))
@@ -435,7 +447,7 @@ def list_licenses():
         return jsonify({"error": "Unauthorized"}), 401
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT license_key, telegram_chat_id, bound_account, last_switch_at, activated_at, expires_at, is_master, is_active FROM licenses")
+    c.execute("SELECT license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active FROM licenses")
     rows = c.fetchall()
     conn.close()
     licenses = []
@@ -444,11 +456,10 @@ def list_licenses():
             "license_key": row[0],
             "telegram_chat_id": row[1],
             "bound_account": row[2],
-            "last_switch_at": row[3],
-            "activated_at": row[4],
-            "expires_at": row[5],
-            "is_master": bool(row[6]),
-            "is_active": bool(row[7])
+            "activated_at": row[3],
+            "expires_at": row[4],
+            "is_master": bool(row[5]),
+            "is_active": bool(row[6])
         })
     return jsonify(licenses), 200
 
@@ -468,7 +479,7 @@ def test_activate_license():
 
     license_key, expires_at = activate_license(str(telegram_chat_id), days)
     expiry_str = expires_at if expires_at else "Never"
-    msg = f"🧪 <b>TEST LICENSE (no payment required)</b>\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.\n\nYou can check your license status anytime with /status."
+    msg = f"🧪 <b>TEST LICENSE (no payment required)</b>\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.\n\nYou can check your license status anytime with /status.\nTo switch MT5 accounts, first use /unbind, then start EA on the new account."
     send_telegram(telegram_chat_id, msg)
     notify_admin(f"🧪 Test license activated (no payment)\nUser: {telegram_chat_id}\nPlan: {plan}\nKey: {license_key}\nExpires: {expiry_str}")
     return jsonify({"success": True, "license_key": license_key, "expires_at": expires_at}), 200
