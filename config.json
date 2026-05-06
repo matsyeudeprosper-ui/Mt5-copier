@@ -1,0 +1,118 @@
+{
+  "plans": {
+    "1month": {
+      "price": 29.99,
+      "days": 30,
+      "display": {
+        "en": "📅 1 Month - $29.99",
+        "fr": "📅 1 mois - 29,99 $"
+      },
+      "name": {
+        "en": "1 Month",
+        "fr": "1 mois"
+      }
+    },
+    "1year": {
+      "price": 99.99,
+      "days": 365,
+      "display": {
+        "en": "🌟 1 Year - $99.99",
+        "fr": "🌟 1 an - 99,99 $"
+      },
+      "name": {
+        "en": "1 Year",
+        "fr": "1 an"
+      }
+    },
+    "lifetime": {
+      "price": 299.99,
+      "days": null,
+      "display": {
+        "en": "⚡ Lifetime - $299.99",
+        "fr": "⚡ À vie - 299,99 $"
+      },
+      "name": {
+        "en": "Lifetime",
+        "fr": "À vie"
+      }
+    }
+  },
+  "messages": {
+    "welcome": {
+      "en": "Welcome to MT5 Trade Copier! 🚀\n\nThis bot helps you purchase and manage your trade copying license.\n\nUse the buttons below to get started.",
+      "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nUtilisez les boutons ci-dessous pour commencer."
+    },
+    "main_menu": {
+      "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
+      "fr": "📋 <b>Menu principal</b>\n\nChoisissez une option :"
+    },
+    "buy_license": {
+      "en": "🛒 Buy License",
+      "fr": "🛒 Acheter une licence"
+    },
+    "my_status": {
+      "en": "🔑 My Status",
+      "fr": "🔑 Mon statut"
+    },
+    "unbind_account": {
+      "en": "🔓 Unbind Account",
+      "fr": "🔓 Dissocier le compte"
+    },
+    "choose_plan": {
+      "en": "Choose your plan:",
+      "fr": "Choisissez votre formule :"
+    },
+    "no_license": {
+      "en": "You don't have an active license. Use the Buy button to purchase one.",
+      "fr": "Vous n'avez pas de licence active. Utilisez le bouton Acheter pour en obtenir une."
+    },
+    "license_status": {
+      "en": "🔑 <b>Your License</b>\n\nKey: <code>{key}</code>\nBound MT5 account: {bound}\nExpires: {expires}\n\nTo switch to a different MT5 account, use the Unbind button first, then start your EA on the new account.",
+      "fr": "🔑 <b>Votre licence</b>\n\nClé : <code>{key}</code>\nCompte MT5 lié : {bound}\nExpire le : {expires}\n\nPour changer de compte MT5, utilisez d'abord le bouton Dissocier, puis lancez votre EA sur le nouveau compte."
+    },
+    "not_bound": {
+      "en": "Not yet bound (will be set on first EA start)",
+      "fr": "Non encore lié (sera défini au premier démarrage de l'EA)"
+    },
+    "never": {
+      "en": "Never",
+      "fr": "Jamais"
+    },
+    "unbind_none": {
+      "en": "Your license is not bound to any account. Nothing to unbind.",
+      "fr": "Votre licence n'est liée à aucun compte. Rien à dissocier."
+    },
+    "unbind_success": {
+      "en": "✅ License unbound from account {account}. You can now start your EA on a new MT5 account – it will automatically bind to that account.",
+      "fr": "✅ Licence dissociée du compte {account}. Vous pouvez maintenant démarrer votre EA sur un nouveau compte MT5 – elle s'y liera automatiquement."
+    },
+    "payment_link": {
+      "en": "💰 Pay here:\n{url}\n\nAfter payment, your license key will be sent.\n\nYou can check your license status anytime with the My Status button.",
+      "fr": "💰 Payez ici :\n{url}\n\nAprès le paiement, votre clé de licence vous sera envoyée.\n\nVous pouvez consulter votre statut à tout moment avec le bouton Mon statut."
+    },
+    "payment_error": {
+      "en": "Payment error. Please try later.",
+      "fr": "Erreur de paiement. Veuillez réessayer plus tard."
+    },
+    "payment_confirmed": {
+      "en": "✅ Payment confirmed!\n\nYour license key:\n<code>{key}</code>\n\nPlan: {plan}\nExpires: {expires}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.\n\nYou can check your license status anytime with the My Status button.\nTo switch MT5 accounts, use the Unbind button first, then start EA on the new account.",
+      "fr": "✅ Paiement confirmé !\n\nVotre clé de licence :\n<code>{key}</code>\n\nFormule : {plan}\nExpire le : {expires}\n\nSaisissez cette clé dans le champ CopierSecretKey (ou LicenseKey) de votre EA.\n\nVous pouvez consulter votre statut à tout moment avec le bouton Mon statut.\nPour changer de compte MT5, utilisez d'abord le bouton Dissocier, puis lancez votre EA sur le nouveau compte."
+    },
+    "admin_sale": {
+      "en": "🎉 New license sold!\nUser: {user}\nPlan: {plan}\nKey: {key}\nExpires: {expires}",
+      "fr": "🎉 Nouvelle licence vendue !\nUtilisateur : {user}\nFormule : {plan}\nClé : {key}\nExpire : {expires}"
+    },
+    "admin_unbind": {
+      "en": "🔄 User {user} unbound license {key} from account {account}.",
+      "fr": "🔄 L'utilisateur {user} a dissocié la licence {key} du compte {account}."
+    },
+    "invalid_option": {
+      "en": "Invalid option.",
+      "fr": "Option invalide."
+    },
+    "invalid_plan": {
+      "en": "Invalid plan. Use main menu to try again.",
+      "fr": "Formule invalide. Utilisez le menu principal pour réessayer."
+    }
+  }
+}
