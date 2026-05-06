@@ -16,7 +16,6 @@ NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")  # Admin chat ID
 MASTER_KEY = os.environ.get("MASTER_KEY", "YourMasterKeyHere123!")
-TELEGRAM_WEBHOOK_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "")  # e.g., https://mt5-copier-vu1t.onrender.com/webhook/telegram
 
 DB_PATH = "/tmp/trades.db"
 app = Flask(__name__)
@@ -24,7 +23,7 @@ app.secret_key = secrets.token_hex(16)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Temporary storage for user payment sessions (chat_id -> {"plan": "1month", "order_id": ...})
+# Temporary storage for payment sessions (optional)
 payment_sessions = {}
 
 # ==================== DATABASE INIT ====================
@@ -61,7 +60,7 @@ def init_db():
 
 init_db()
 
-# ==================== TELEGRAM BOT HELPERS ====================
+# ==================== HELPER FUNCTIONS ====================
 def send_telegram(chat_id, text, reply_markup=None):
     if not TELEGRAM_BOT_TOKEN:
         return False
@@ -188,7 +187,6 @@ def telegram_webhook():
         return "No update", 400
     logger.info(f"Telegram update: {json.dumps(update)}")
 
-    # Handle message or callback_query
     if "message" in update:
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "")
@@ -219,61 +217,90 @@ def show_plan_selection(chat_id):
     }
     send_telegram(chat_id, "Choose your plan:", reply_markup)
 
+# ==================== NOWPAYMENTS INVOICE CREATION (WORKING PAYLOAD) ====================
 def create_payment_invoice(chat_id, plan):
     plan_map = {"1month": 30, "1year": 365, "lifetime": None}
     price_map = {"1month": 29.99, "1year": 99.99, "lifetime": 299.99}
     if plan not in plan_map:
-        send_telegram(chat_id, "Invalid plan. Please use /buy again.")
+        send_telegram(chat_id, "Invalid plan. Use /buy again.")
         return
     price = price_map[plan]
     days = plan_map[plan]
 
     np_url = "https://api.nowpayments.io/v1/invoice"
-    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
+    headers = {
+        "x-api-key": NOWPAYMENTS_API_KEY,
+        "Content-Type": "application/json"
+    }
     order_id = secrets.token_hex(8)
+
+    # Minimal payload as per successful PowerShell test
     payload = {
         "price_amount": price,
-        "price_currency": "USD",
-        "pay_currency": "USDT",
+        "price_currency": "usd",
         "order_id": order_id,
         "order_description": f"MT5 Copier License - {plan}",
         "ipn_callback_url": "https://mt5-copier-vu1t.onrender.com/webhook/nowpayments",
         "success_url": f"https://mt5-copier-vu1t.onrender.com/payment_success?order_id={order_id}",
         "cancel_url": "https://mt5-copier-vu1t.onrender.com/payment_cancel"
     }
+
+    logger.info(f"NowPayments request: {json.dumps(payload)}")
     try:
-        resp = requests.post(np_url, json=payload, headers=headers, timeout=10)
+        resp = requests.post(np_url, json=payload, headers=headers, timeout=15)
+        logger.info(f"NowPayments response status: {resp.status_code}")
+        logger.info(f"NowPayments response body: {resp.text}")
         resp.raise_for_status()
         inv = resp.json()
-        payment_url = inv["invoice_url"]
-        # Store order in database
+        payment_url = inv.get("invoice_url")
+        if not payment_url:
+            send_telegram(chat_id, "Payment error: no invoice URL.")
+            return
+
+        # Store order in DB
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("INSERT INTO orders (order_id, plan, license_key, telegram_chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                   (order_id, plan, "", str(chat_id), "pending", datetime.now().isoformat()))
         conn.commit()
         conn.close()
-        # Store session for quick reference (optional)
-        payment_sessions[order_id] = {"chat_id": chat_id, "plan": plan}
-        # Send payment link to user
-        send_telegram(chat_id, f"💰 Please complete your payment using the link below:\n\n{payment_url}\n\nAfter payment, your license key will be sent automatically.")
-    except Exception as e:
-        logger.error(f"NowPayments error: {e}")
-        send_telegram(chat_id, "Payment gateway error. Please try again later.")
 
-# ==================== NOWPAYMENTS WEBHOOK ====================
+        send_telegram(chat_id, f"💰 Pay here:\n{payment_url}\n\nAfter payment, your license key will be sent.")
+    except Exception as e:
+        logger.error(f"NowPayments error: {str(e)}")
+        send_telegram(chat_id, "Payment error. Please try later.")
+
+# ==================== NOWPAYMENTS WEBHOOK (IPN) ====================
 @app.route("/webhook/nowpayments", methods=["POST"])
 def nowpayments_webhook():
     signature = request.headers.get("x-nowpayments-sig")
     if not signature or not NOWPAYMENTS_IPN_SECRET:
+        logger.warning("Missing signature or IPN secret")
         return "Signature missing", 401
-    payload = request.get_data()
-    computed = hmac.new(NOWPAYMENTS_IPN_SECRET.encode(), payload, hashlib.sha512).hexdigest()
-    if not hmac.compare_digest(computed, signature):
+
+    payload_raw = request.get_data()
+    logger.info(f"NowPayments webhook raw payload: {payload_raw.decode('utf-8')}")
+
+    # Verify signature (sort keys)
+    try:
+        data = request.get_json()
+        # Sort keys recursively
+        def sort_dict(d):
+            return {k: sort_dict(v) if isinstance(v, dict) else v for k, v in sorted(d.items())}
+        sorted_data = sort_dict(data)
+        sorted_json = json.dumps(sorted_data, separators=(',', ':'))
+        computed = hmac.new(NOWPAYMENTS_IPN_SECRET.encode(), sorted_json.encode(), hashlib.sha512).hexdigest()
+        if not hmac.compare_digest(computed, signature):
+            logger.error(f"HMAC mismatch. Computed: {computed}, Received: {signature}")
+            return "Invalid signature", 401
+    except Exception as e:
+        logger.error(f"Signature verification error: {e}")
         return "Invalid signature", 401
-    data = request.get_json()
+
     payment_status = data.get("payment_status")
     order_id = data.get("order_id")
+    logger.info(f"Webhook: payment_status={payment_status}, order_id={order_id}")
+
     if payment_status == "finished" and order_id:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -288,16 +315,18 @@ def nowpayments_webhook():
             conn.commit()
             expiry_str = expires_at if expires_at else "Never"
             # Send key to user
-            send_telegram(chat_id, f"✅ Payment confirmed!\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's <code>CopierSecretKey</code> (or LicenseKey) input.")
+            send_telegram(chat_id, f"✅ Payment confirmed!\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.")
             # Notify admin
             notify_admin(f"🎉 New license sold!\nUser: {chat_id}\nPlan: {plan}\nKey: {license_key}\nExpires: {expiry_str}")
+        else:
+            logger.warning(f"Order not found: {order_id}")
         conn.close()
     return jsonify({"status": "ok"}), 200
 
-# ==================== WEB PAYMENT PAGE (fallback) ====================
+# ==================== FALLBACK WEB PAGES ====================
 @app.route("/buy", methods=["GET"])
 def payment_page():
-    return render_template("buy.html")  # optional, can be removed if bot only
+    return render_template("buy.html")  # optional, can be removed
 
 @app.route("/payment_success", methods=["GET"])
 def payment_success():
