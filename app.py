@@ -21,7 +21,7 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "change_me_admin")
 NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "")
 NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")  # Admin chat ID
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 MASTER_KEY = os.environ.get("MASTER_KEY", "YourMasterKeyHere123!")
 
 DB_PATH = "/tmp/trades.db"
@@ -103,16 +103,48 @@ def generate_license_key():
     return secrets.token_hex(16).upper()
 
 def activate_license(telegram_chat_id, expires_days):
-    license_key = generate_license_key()
-    activated_at = datetime.now().isoformat()
-    expires_at = None if expires_days is None else (datetime.now() + timedelta(days=expires_days)).isoformat()
+    """
+    Activate or extend a license for a given Telegram user.
+    Returns (license_key, expires_at)
+    """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active)
-                 VALUES (?, ?, ?, ?, ?, 0, 1)''', (license_key, telegram_chat_id, None, activated_at, expires_at))
-    conn.commit()
-    conn.close()
-    return license_key, expires_at
+    # Check if user already has an active non‑master license
+    c.execute("SELECT license_key, expires_at FROM licenses WHERE telegram_chat_id = ? AND is_master = 0 ORDER BY expires_at DESC LIMIT 1", (telegram_chat_id,))
+    row = c.fetchone()
+    now = datetime.now()
+    if row:
+        # Existing license found – extend it
+        license_key = row[0]
+        old_expiry = row[1]
+        if expires_days is None:
+            # Lifetime: set expiry to None (if already lifetime, stays None)
+            new_expiry = None
+        else:
+            if old_expiry:
+                old_date = datetime.fromisoformat(old_expiry)
+                if old_date > now:
+                    new_expiry = (old_date + timedelta(days=expires_days)).isoformat()
+                else:
+                    new_expiry = (now + timedelta(days=expires_days)).isoformat()
+            else:
+                # Already lifetime – extending a lifetime license?
+                # Keep as lifetime (no expiry)
+                new_expiry = None
+        c.execute("UPDATE licenses SET expires_at = ? WHERE license_key = ?", (new_expiry, license_key))
+        conn.commit()
+        conn.close()
+        return license_key, new_expiry
+    else:
+        # No existing license – create new one
+        license_key = generate_license_key()
+        activated_at = now.isoformat()
+        expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
+        c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active)
+                     VALUES (?, ?, ?, ?, ?, 0, 1)''', (license_key, telegram_chat_id, None, activated_at, expires_at))
+        conn.commit()
+        conn.close()
+        return license_key, expires_at
 
 def is_license_valid(license_key, require_master=False, mt5_account=None):
     conn = sqlite3.connect(DB_PATH)
@@ -420,7 +452,7 @@ def nowpayments_webhook():
             conn.commit()
             expiry_str = expires_at if expires_at else MESSAGES["never"]["en"]
             plan_name = PLANS[plan_id]["name"]["en"]
-            user_lang = "en"  # Could detect from user's language if you store it; default to English
+            # Send message to user (use English or detect language – we store lang? For simplicity, English)
             msg = MESSAGES["payment_confirmed"]["en"].format(key=license_key, plan=plan_name, expires=expiry_str)
             send_telegram(chat_id, msg)
             admin_msg = MESSAGES["admin_sale"]["en"].format(user=chat_id, plan=plan_name, key=license_key, expires=expiry_str)
