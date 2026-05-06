@@ -39,12 +39,28 @@
   },
   "messages": {
     "welcome": {
-      "en": "Welcome to MT5 Trade Copier! 🚀\n\nThis bot helps you purchase and manage your trade copying license.\n\nType /help for a list of commands, or use the buttons below.",
-      "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous."
+      "en": "Welcome to MT5 Trade Copier! 🚀\n\nThis bot helps you purchase and manage your trade copying license.\n\nType /help for a list of commands, or use the buttons below.\n\n🎁 **New users**: Try a 7‑day free trial with `/trial`!",
+      "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous.\n\n🎁 **Nouveaux utilisateurs** : Essayez l'essai gratuit de 7 jours avec `/trial` !"
     },
     "help": {
-      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/trial - Start a 7-day free trial\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report\n/setbalance - Set your starting balance\n/deposit - Add a deposit\n\nYou can also use the buttons below.",
-      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/trial - Essai gratuit de 7 jours\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/setbalance - Définir votre solde initial\n/deposit - Ajouter un dépôt\n\nVous pouvez aussi utiliser les boutons ci-dessous."
+      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/trial - Start 7-day free trial (if available)\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report\n/about - About the strategy\n/resume - Resume trading after a hard stop\n\nYou can also use the buttons below.",
+      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/trial - Essai gratuit de 7 jours (si disponible)\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/about - À propos de la stratégie\n/resume - Reprendre le trading après un hard stop\n\nVous pouvez aussi utiliser les boutons ci-dessous."
+    },
+    "about": {
+      "en": "📈 *About the MT5 Trade Copier Strategy*\n\n🔹 *High Profitability* – designed to generate significant returns.\n🔹 *High Risk* – aggressive trading; losses can be large.\n🔹 *No Per‑Trade Stop Loss* – risk is managed via a global *Hard Stop*.\n🔹 *Hard Stop* – set a maximum loss amount in your EA settings. Trading stops automatically when reached. You must reset from Telegram (`/resume` command) to continue.\n🔹 *Lot Size* – calculated automatically based on your assigned Hard Stop amount. Larger Hard Stop = larger lot size and higher risk.\n🔹 *Minimum Hard Stop* – 300 USD.\n🔹 *Broker Requirements* – prefer a broker with *no commission* and *low spreads* for best results.\n🔹 *Current Instrument* – only BTC (Bitcoin) is traded.\n\nUse `/buy` to purchase a license or `/trial` to start a 7‑day free trial.",
+      "fr": "📈 *À propos de la stratégie MT5 Trade Copier*\n\n🔹 *Haute rentabilité* – conçue pour générer des rendements significatifs.\n🔹 *Risque élevé* – trading agressif ; les pertes peuvent être importantes.\n🔹 *Pas de Stop Loss par transaction* – le risque est géré via un *Hard Stop* global.\n🔹 *Hard Stop* – définissez un montant de perte maximum dans les paramètres de l'EA. Le trading s'arrête automatiquement lorsqu'il est atteint. Vous devez réinitialiser depuis Telegram (`/resume`) pour continuer.\n🔹 *Taille de lot* – calculée automatiquement en fonction du Hard Stop. Un Hard Stop plus grand = lot plus gros et risque plus élevé.\n🔹 *Hard Stop minimum* – 300 USD.\n🔹 *Courtier recommandé* – préférez un courtier *sans commission* et avec *faibles spreads* pour de meilleurs résultats.\n🔹 *Instrument actuel* – seulement BTC (Bitcoin) est tradé.\n\nUtilisez `/buy` pour acheter une licence ou `/trial` pour un essai gratuit de 7 jours."
+    },
+    "resume_success": {
+      "en": "✅ Hard stop flag cleared. You can now restart your EA – trading will resume.",
+      "fr": "✅ Flag de hard stop effacé. Vous pouvez maintenant redémarrer votre EA – le trading reprendra."
+    },
+    "no_hard_stop": {
+      "en": "ℹ️ You have no active hard stop flag. Your EA is already trading normally.",
+      "fr": "ℹ️ Vous n'avez aucun flag de hard stop actif. Votre EA trade déjà normalement."
+    },
+    "resume_not_needed": {
+      "en": "You don't have an active license. Buy or try a trial first.",
+      "fr": "Vous n'avez pas de licence active. Achetez ou essayez d'abord un essai."
     },
     "main_menu": {
       "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
@@ -53,6 +69,10 @@
     "buy_license": {
       "en": "🛒 Buy License",
       "fr": "🛒 Acheter une licence"
+    },
+    "trial_button": {
+      "en": "🎁 Start 7-Day Trial",
+      "fr": "🎁 Essai gratuit 7 jours"
     },
     "my_status": {
       "en": "🔑 My Status",
@@ -71,8 +91,8 @@
       "fr": "Vous n'avez pas de licence active. Utilisez le bouton Acheter pour en obtenir une."
     },
     "license_status": {
-      "en": "🔑 <b>Your License</b>\n\nKey: <code>{key}</code>\nBound MT5 account: {bound}\nExpires: {expires}\n\nTo switch to a different MT5 account, use the Unbind button first, then start your EA on the new account.",
-      "fr": "🔑 <b>Votre licence</b>\n\nClé : <code>{key}</code>\nCompte MT5 lié : {bound}\nExpire le : {expires}\n\nPour changer de compte MT5, utilisez d'abord le bouton Dissocier, puis lancez votre EA sur le nouveau compte."
+      "en": "🔑 <b>Your License</b>\n\nKey: <code>{key}</code>\nBound MT5 account: {bound}\nExpires: {expires}\nHard stop active: {hard_stop}\n\nTo switch to a different MT5 account, use the Unbind button first, then start your EA on the new account.",
+      "fr": "🔑 <b>Votre licence</b>\n\nClé : <code>{key}</code>\nCompte MT5 lié : {bound}\nExpire le : {expires}\nHard stop actif : {hard_stop}\n\nPour changer de compte MT5, utilisez d'abord le bouton Dissocier, puis lancez votre EA sur le nouveau compte."
     },
     "not_bound": {
       "en": "Not yet bound (will be set on first EA start)",

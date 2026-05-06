@@ -68,7 +68,9 @@ def init_db():
         base_currency TEXT DEFAULT 'USD',
         deposits TEXT DEFAULT '[]',
         pip_value REAL,
-        currency TEXT
+        currency TEXT,
+        hard_stop_hit INTEGER DEFAULT 0,
+        trial_used INTEGER DEFAULT 0
     )''')
 
     # Master key sync
@@ -115,8 +117,7 @@ def generate_license_key():
 def activate_license(telegram_chat_id, expires_days, is_trial=False):
     """
     Activate or extend a license for a given Telegram user.
-    If is_trial=True, create a trial license (expires after expires_days).
-    If a license already exists (trial or paid), extend it (unless it's a trial and we are creating a paid one, etc.)
+    If is_trial=True, create a trial license.
     Returns (license_key, expires_at)
     """
     conn = sqlite3.connect(DB_PATH)
@@ -126,7 +127,6 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
     row = c.fetchone()
     now = datetime.now()
     if row:
-        # Existing license found – extend it
         license_key = row[0]
         old_expiry = row[1]
         old_is_trial = row[2]
@@ -141,7 +141,7 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
                     new_expiry = (now + timedelta(days=expires_days)).isoformat()
             else:
                 new_expiry = None
-        # If we are creating a paid license from a trial, set is_trial=0
+        # If converting trial to paid, set is_trial=0
         if is_trial == False and old_is_trial == 1:
             c.execute("UPDATE licenses SET expires_at = ?, is_trial = 0 WHERE license_key = ?", (new_expiry, license_key))
         else:
@@ -150,7 +150,6 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
         conn.close()
         return license_key, new_expiry
     else:
-        # No existing license – create new
         license_key = generate_license_key()
         activated_at = now.isoformat()
         expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
@@ -269,11 +268,11 @@ def export_csv():
 def get_user_settings(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
+    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
     row = c.fetchone()
     conn.close()
     if row:
-        start, currency, deposits_json, pip_value, pip_currency = row
+        start, currency, deposits_json, pip_value, pip_currency, hard_stop_hit, trial_used = row
         deposits = json.loads(deposits_json) if deposits_json else []
         total_deposits = sum(deposits) if deposits else 0
         effective_start = start + total_deposits if start else 0
@@ -283,7 +282,9 @@ def get_user_settings(chat_id):
             "deposits": deposits,
             "effective_start": effective_start,
             "pip_value": pip_value,
-            "pip_currency": pip_currency
+            "pip_currency": pip_currency,
+            "hard_stop_hit": bool(hard_stop_hit),
+            "trial_used": bool(trial_used)
         }
     return {
         "starting_balance": None,
@@ -291,13 +292,15 @@ def get_user_settings(chat_id):
         "deposits": [],
         "effective_start": 0,
         "pip_value": None,
-        "pip_currency": None
+        "pip_currency": None,
+        "hard_stop_hit": False,
+        "trial_used": False
     }
 
-def set_user_settings(chat_id, starting_balance=None, base_currency=None, pip_value=None, pip_currency=None):
+def set_user_settings(chat_id, starting_balance=None, base_currency=None, pip_value=None, pip_currency=None, hard_stop_hit=None, trial_used=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
+    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
     row = c.fetchone()
     if row:
         start = starting_balance if starting_balance is not None else row[0]
@@ -305,13 +308,17 @@ def set_user_settings(chat_id, starting_balance=None, base_currency=None, pip_va
         deposits_json = row[2] if row[2] else "[]"
         pip_val = pip_value if pip_value is not None else row[3]
         pip_curr = pip_currency if pip_currency is not None else row[4]
-        c.execute("UPDATE user_settings SET starting_balance = ?, base_currency = ?, pip_value = ?, currency = ? WHERE telegram_chat_id = ?",
-                  (start, curr, pip_val, pip_curr, str(chat_id)))
+        hard_stop = hard_stop_hit if hard_stop_hit is not None else row[5]
+        trial = trial_used if trial_used is not None else row[6]
+        c.execute("UPDATE user_settings SET starting_balance = ?, base_currency = ?, pip_value = ?, currency = ?, hard_stop_hit = ?, trial_used = ? WHERE telegram_chat_id = ?",
+                  (start, curr, pip_val, pip_curr, hard_stop, trial, str(chat_id)))
     else:
         start = starting_balance if starting_balance is not None else 0
         curr = base_currency if base_currency is not None else "USD"
-        c.execute("INSERT INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits, pip_value, currency) VALUES (?, ?, ?, ?, ?, ?)",
-                  (str(chat_id), start, curr, "[]", pip_value, pip_currency))
+        hard_stop = 1 if hard_stop_hit else 0
+        trial = 1 if trial_used else 0
+        c.execute("INSERT INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (str(chat_id), start, curr, "[]", pip_value, pip_currency, hard_stop, trial))
     conn.commit()
     conn.close()
 
@@ -329,7 +336,13 @@ def add_deposit(chat_id, amount):
     conn.commit()
     conn.close()
 
-# ==================== CALIBRATION ENDPOINT ====================
+def set_hard_stop(chat_id, hard_stop_hit):
+    set_user_settings(chat_id, hard_stop_hit=hard_stop_hit)
+
+def mark_trial_used(chat_id):
+    set_user_settings(chat_id, trial_used=True)
+
+# ==================== CALIBRATION & HARD STOP ENDPOINTS ====================
 @app.route("/calibrate_pip", methods=["POST"])
 def calibrate_pip():
     if not request.is_json:
@@ -356,7 +369,7 @@ def calibrate_pip():
     settings = get_user_settings(chat_id)
     if settings["pip_value"] is not None:
         conn.close()
-        return jsonify({"error": "Calibration already exists for this license"}), 400
+        return jsonify({"error": "Calibration already exists"}), 400
 
     c.execute("SELECT close_profit FROM trades WHERE action = 'close' AND ticket = ?", (str(master_ticket),))
     trade_row = c.fetchone()
@@ -368,22 +381,38 @@ def calibrate_pip():
 
     master_pips = trade_row[0]
     if master_pips == 0:
-        return jsonify({"error": "Master trade pip difference is zero. Cannot calibrate."}), 400
+        return jsonify({"error": "Master trade pip difference is zero"}), 400
 
     pip_value = real_profit / closed_pips
     if pip_value <= 0:
-        return jsonify({"error": "Invalid pip value (must be positive)."}), 400
+        return jsonify({"error": "Invalid pip value"}), 400
 
     set_pip_calibration(chat_id, pip_value, currency)
     msg = MESSAGES["calibration_success"]["en"].format(currency=currency, pip_value=pip_value)
     send_telegram(chat_id, msg)
+    return jsonify({"success": True, "pip_value": pip_value, "currency": currency}), 200
 
-    return jsonify({
-        "success": True,
-        "pip_value": pip_value,
-        "currency": currency,
-        "message": "Calibration successful"
-    }), 200
+@app.route("/hard_stop", methods=["POST"])
+def report_hard_stop():
+    """Receiver EA calls this when hard stop is hit"""
+    if not request.is_json:
+        return jsonify({"error": "JSON required"}), 400
+    data = request.get_json()
+    license_key = data.get("license_key")
+    if not license_key:
+        return jsonify({"error": "Missing license_key"}), 400
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT telegram_chat_id FROM licenses WHERE license_key = ? AND is_master = 0", (license_key,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Invalid license key"}), 401
+    chat_id = row[0]
+    set_hard_stop(chat_id, True)
+    conn.close()
+    send_telegram(chat_id, "⚠️ Your EA has hit the hard stop. Trading is paused. Use /resume to continue.")
+    return jsonify({"success": True}), 200
 
 # ==================== REPORTING ====================
 import reporting
@@ -431,7 +460,7 @@ def format_report_text(stats, period_key, currency="USD", start_balance=None, la
 def handle_report(chat_id, period, lang):
     purchase_date = reporting.get_license_purchase_date(str(chat_id))
     if not purchase_date:
-        send_telegram(chat_id, "You don't have an active license. Buy one first to see reports.")
+        send_telegram(chat_id, "You don't have an active license.")
         return
     trades = reporting.get_trades_from_date(purchase_date)
     now = datetime.now()
@@ -460,7 +489,7 @@ def handle_report(chat_id, period, lang):
 
 def handle_admin_report(chat_id, lang):
     if str(chat_id) != TELEGRAM_CHAT_ID:
-        send_telegram(chat_id, "Unauthorized. This command is for the bot admin only.")
+        send_telegram(chat_id, "Unauthorized.")
         return
     if ADMIN_STARTING_BALANCE <= 0:
         send_telegram(chat_id, MESSAGES["admin_report_not_set"][lang])
@@ -475,14 +504,24 @@ def handle_admin_report(chat_id, lang):
     send_telegram(chat_id, msg)
 
 # ==================== TELEGRAM BOT ====================
-def main_menu_markup(lang):
-    return {
-        "inline_keyboard": [
-            [{"text": MESSAGES["buy_license"][lang], "callback_data": "menu_buy"}],
-            [{"text": MESSAGES["my_status"][lang], "callback_data": "menu_status"}],
-            [{"text": MESSAGES["unbind_account"][lang], "callback_data": "menu_unbind"}]
-        ]
-    }
+def get_main_menu_markup(chat_id, lang):
+    """Conditional menu: show trial button only if user has no license and hasn't used trial before."""
+    settings = get_user_settings(chat_id)
+    has_license = False
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
+    if c.fetchone():
+        has_license = True
+    conn.close()
+    show_trial = (not has_license) and (not settings["trial_used"])
+    buttons = []
+    if show_trial:
+        buttons.append([{"text": MESSAGES["trial_button"][lang], "callback_data": "menu_trial"}])
+    buttons.append([{"text": MESSAGES["buy_license"][lang], "callback_data": "menu_buy"}])
+    buttons.append([{"text": MESSAGES["my_status"][lang], "callback_data": "menu_status"}])
+    buttons.append([{"text": MESSAGES["unbind_account"][lang], "callback_data": "menu_unbind"}])
+    return {"inline_keyboard": buttons}
 
 def plan_selection_markup(lang):
     buttons = []
@@ -520,7 +559,7 @@ def telegram_webhook():
         chat_id = update["message"]["chat"]["id"]
         text = update["message"].get("text", "").lower()
         if text == "/start":
-            send_telegram(chat_id, MESSAGES["welcome"][lang], reply_markup=main_menu_markup(lang))
+            send_telegram(chat_id, MESSAGES["welcome"][lang], reply_markup=get_main_menu_markup(chat_id, lang))
         elif text == "/buy":
             send_telegram(chat_id, MESSAGES["choose_plan"][lang], reply_markup=plan_selection_markup(lang))
         elif text == "/trial":
@@ -530,9 +569,13 @@ def telegram_webhook():
         elif text == "/unbind":
             unbind_license(chat_id, lang)
         elif text == "/help":
-            send_telegram(chat_id, MESSAGES["help"][lang], reply_markup=main_menu_markup(lang))
+            send_telegram(chat_id, MESSAGES["help"][lang], reply_markup=get_main_menu_markup(chat_id, lang))
         elif text == "/report":
             show_report_menu(chat_id, lang)
+        elif text == "/about":
+            send_telegram(chat_id, MESSAGES["about"][lang])
+        elif text == "/resume":
+            handle_resume(chat_id, lang)
         elif text == "/adminreport":
             handle_admin_report(chat_id, lang)
         elif text.startswith("/setbalance"):
@@ -562,13 +605,15 @@ def telegram_webhook():
             else:
                 send_telegram(chat_id, MESSAGES["deposit_invalid"][lang])
         else:
-            send_telegram(chat_id, MESSAGES["main_menu"][lang], reply_markup=main_menu_markup(lang))
+            send_telegram(chat_id, MESSAGES["main_menu"][lang], reply_markup=get_main_menu_markup(chat_id, lang))
     elif "callback_query" in update:
         query = update["callback_query"]
         chat_id = query["message"]["chat"]["id"]
         data = query["data"]
         if data == "menu_buy":
             send_telegram(chat_id, MESSAGES["choose_plan"][lang], reply_markup=plan_selection_markup(lang))
+        elif data == "menu_trial":
+            handle_trial(chat_id, lang)
         elif data == "menu_status":
             check_license_status(chat_id, lang)
         elif data == "menu_unbind":
@@ -600,16 +645,19 @@ def check_license_status(chat_id, lang):
     c = conn.cursor()
     c.execute("SELECT license_key, bound_account, expires_at, is_trial FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
     row = c.fetchone()
-    conn.close()
     if not row:
+        conn.close()
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
     license_key, bound_account, expires_at, is_trial = row
     expiry_str = expires_at if expires_at else MESSAGES["never"][lang]
     bound_str = bound_account if bound_account else MESSAGES["not_bound"][lang]
     trial_str = " (Trial)" if is_trial else ""
-    msg = MESSAGES["license_status"][lang].format(key=license_key, bound=bound_str, expires=expiry_str) + trial_str
+    settings = get_user_settings(chat_id)
+    hard_stop_str = "Yes" if settings["hard_stop_hit"] else "No"
+    msg = MESSAGES["license_status"][lang].format(key=license_key, bound=bound_str, expires=expiry_str, hard_stop=hard_stop_str) + trial_str
     send_telegram(chat_id, msg)
+    conn.close()
 
 def unbind_license(chat_id, lang):
     conn = sqlite3.connect(DB_PATH)
@@ -635,7 +683,7 @@ def unbind_license(chat_id, lang):
     notify_admin(admin_msg)
 
 def handle_trial(chat_id, lang):
-    # Check if user already has any license (trial or paid)
+    # Check if already has license
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
@@ -644,13 +692,35 @@ def handle_trial(chat_id, lang):
         send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
         return
     conn.close()
-    # Create trial license (7 days)
+    # Check if trial already used (via user_settings)
+    settings = get_user_settings(chat_id)
+    if settings["trial_used"]:
+        send_telegram(chat_id, MESSAGES["trial_not_available"][lang])
+        return
     trial_days = 7
     license_key, expires_at = activate_license(str(chat_id), trial_days, is_trial=True)
     expiry_str = expires_at if expires_at else "7 days"
+    mark_trial_used(chat_id)
     msg = MESSAGES["trial_success"][lang].format(key=license_key, expires=expiry_str)
     send_telegram(chat_id, msg)
     notify_admin(f"🧪 New trial license\nUser: {chat_id}\nKey: {license_key}\nExpires: {expiry_str}")
+
+def handle_resume(chat_id, lang):
+    # Check if user has a license
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
+    if not c.fetchone():
+        conn.close()
+        send_telegram(chat_id, MESSAGES["resume_not_needed"][lang])
+        return
+    conn.close()
+    settings = get_user_settings(chat_id)
+    if not settings["hard_stop_hit"]:
+        send_telegram(chat_id, MESSAGES["no_hard_stop"][lang])
+        return
+    set_hard_stop(chat_id, False)
+    send_telegram(chat_id, MESSAGES["resume_success"][lang])
 
 def create_payment_invoice(chat_id, plan_id, lang):
     if plan_id not in PLANS:
@@ -776,13 +846,20 @@ def validate_license():
     if not valid:
         return jsonify({"allowed": False, "message": "Invalid or expired license, or wrong MT5 account (use Unbind button on Telegram to reset)"}), 200
 
+    # Get hard stop status for this license
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT expires_at FROM licenses WHERE license_key = ?", (license_key,))
+    c.execute("SELECT telegram_chat_id FROM licenses WHERE license_key = ?", (license_key,))
     row = c.fetchone()
+    hard_stop_hit = False
+    if row:
+        settings = get_user_settings(row[0])
+        hard_stop_hit = settings["hard_stop_hit"]
+    c.execute("SELECT expires_at FROM licenses WHERE license_key = ?", (license_key,))
+    row2 = c.fetchone()
+    expires_at = row2[0] if row2 else None
     conn.close()
-    expires_at = row[0] if row else None
-    return jsonify({"allowed": True, "expires_at": expires_at, "message": "Valid"}), 200
+    return jsonify({"allowed": True, "expires_at": expires_at, "hard_stop_hit": hard_stop_hit, "message": "Valid"}), 200
 
 # ==================== TEST DASHBOARD & ADMIN ====================
 @app.route("/test", methods=["GET"])
