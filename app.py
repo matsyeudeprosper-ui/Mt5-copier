@@ -16,12 +16,12 @@ with open("config.json", "r", encoding="utf-8") as f:
 PLANS = CONFIG["plans"]
 MESSAGES = CONFIG["messages"]
 
-# Environment variables (still secure)
+# Environment variables
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "change_me_admin")
 NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "")
 NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")  # Admin chat ID
 MASTER_KEY = os.environ.get("MASTER_KEY", "YourMasterKeyHere123!")
 
 DB_PATH = "/tmp/trades.db"
@@ -30,7 +30,7 @@ app.secret_key = secrets.token_hex(16)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== DATABASE INIT (unchanged) ====================
+# ==================== DATABASE INIT ====================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -80,7 +80,7 @@ def init_db():
 
 init_db()
 
-# ==================== HELPER FUNCTIONS (unchanged) ====================
+# ==================== HELPER FUNCTIONS ====================
 def send_telegram(chat_id, text, reply_markup=None):
     if not TELEGRAM_BOT_TOKEN:
         return False
@@ -144,6 +144,7 @@ def is_license_valid(license_key, require_master=False, mt5_account=None):
             return False
         if mt5_account is not None:
             if bound_account is None:
+                # First bind
                 c.execute("UPDATE licenses SET bound_account = ? WHERE license_key = ?", (mt5_account, license_key))
                 c.execute("INSERT INTO license_activations (license_key, mt5_account, action, created_at) VALUES (?, ?, ?, ?)",
                           (license_key, mt5_account, "bind", datetime.now().isoformat()))
@@ -159,7 +160,7 @@ def is_license_valid(license_key, require_master=False, mt5_account=None):
         conn.close()
         return True
 
-# ==================== TRADE COPYING ENDPOINTS (unchanged) ====================
+# ==================== TRADE COPYING ENDPOINTS ====================
 @app.route("/copier", methods=["POST"])
 def receive_trade():
     license_key = request.headers.get("X-Auth-Token")
@@ -219,7 +220,7 @@ def export_csv():
     writer.writerows(rows)
     return output.getvalue(), 200, {"Content-Type":"text/csv","Content-Disposition":"attachment;filename=trades.csv"}
 
-# ==================== TELEGRAM BOT (WITH CONFIG) ====================
+# ==================== TELEGRAM BOT ====================
 def main_menu_markup(lang):
     return {
         "inline_keyboard": [
@@ -251,7 +252,7 @@ def telegram_webhook():
         return "No update", 400
     logger.info(f"Telegram update: {json.dumps(update)}")
 
-    # Detect language
+    # Language detection
     lang = "en"
     if "message" in update and "from" in update["message"]:
         lang = update["message"]["from"].get("language_code", "en")
@@ -267,8 +268,15 @@ def telegram_webhook():
         text = update["message"].get("text", "").lower()
         if text == "/start":
             send_telegram(chat_id, MESSAGES["welcome"][lang], reply_markup=main_menu_markup(lang))
+        elif text == "/buy":
+            send_telegram(chat_id, MESSAGES["choose_plan"][lang], reply_markup=plan_selection_markup(lang))
+        elif text == "/status":
+            check_license_status(chat_id, lang)
+        elif text == "/unbind":
+            unbind_license(chat_id, lang)
+        elif text == "/help":
+            send_telegram(chat_id, MESSAGES["help"][lang], reply_markup=main_menu_markup(lang))
         else:
-            # Unknown command – just show main menu
             send_telegram(chat_id, MESSAGES["main_menu"][lang], reply_markup=main_menu_markup(lang))
     elif "callback_query" in update:
         query = update["callback_query"]
@@ -370,7 +378,7 @@ def create_payment_invoice(chat_id, plan_id, lang):
         logger.error(f"NowPayments error: {str(e)}")
         send_telegram(chat_id, MESSAGES["payment_error"][lang])
 
-# ==================== NOWPAYMENTS WEBHOOK (unchanged) ====================
+# ==================== NOWPAYMENTS WEBHOOK ====================
 @app.route("/webhook/nowpayments", methods=["POST"])
 def nowpayments_webhook():
     signature = request.headers.get("x-nowpayments-sig")
@@ -411,9 +419,8 @@ def nowpayments_webhook():
             c.execute("UPDATE orders SET license_key = ?, status = 'completed' WHERE order_id = ?", (license_key, order_id))
             conn.commit()
             expiry_str = expires_at if expires_at else MESSAGES["never"]["en"]
-            # Use English for admin, but for the user we need to know their language. Store user language? For simplicity, send English.
-            # Better: fetch user's preferred language from a separate table. To keep it simple, we'll send English (you can extend later).
             plan_name = PLANS[plan_id]["name"]["en"]
+            user_lang = "en"  # Could detect from user's language if you store it; default to English
             msg = MESSAGES["payment_confirmed"]["en"].format(key=license_key, plan=plan_name, expires=expiry_str)
             send_telegram(chat_id, msg)
             admin_msg = MESSAGES["admin_sale"]["en"].format(user=chat_id, plan=plan_name, key=license_key, expires=expiry_str)
@@ -423,10 +430,10 @@ def nowpayments_webhook():
         conn.close()
     return jsonify({"status": "ok"}), 200
 
-# ==================== OTHER ENDPOINTS (unchanged) ====================
+# ==================== OTHER ENDPOINTS ====================
 @app.route("/buy", methods=["GET"])
 def payment_page():
-    return render_template("buy.html")
+    return render_template("buy.html") if os.path.exists("templates/buy.html") else "<h1>Use Telegram bot to purchase</h1>"
 
 @app.route("/payment_success", methods=["GET"])
 def payment_success():
@@ -463,7 +470,7 @@ def validate_license():
 # ==================== TEST DASHBOARD & ADMIN ====================
 @app.route("/test", methods=["GET"])
 def test_dashboard():
-    return render_template("test.html")
+    return render_template("test.html") if os.path.exists("templates/test.html") else "<h1>Test dashboard available</h1><p>Add templates/test.html</p>"
 
 @app.route("/licenses", methods=["GET"])
 def list_licenses():
@@ -501,7 +508,6 @@ def test_activate_license():
     days = PLANS[plan_id]["days"]
     license_key, expires_at = activate_license(str(telegram_chat_id), days)
     expiry_str = expires_at if expires_at else "Never"
-    # Send English test message
     plan_name = PLANS[plan_id]["name"]["en"]
     msg = MESSAGES["payment_confirmed"]["en"].format(key=license_key, plan=plan_name, expires=expiry_str)
     send_telegram(telegram_chat_id, msg)

@@ -39,8 +39,12 @@
   },
   "messages": {
     "welcome": {
-      "en": "Welcome to MT5 Trade Copier! 🚀\n\nThis bot helps you purchase and manage your trade copying license.\n\nUse the buttons below to get started.",
-      "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nUtilisez les boutons ci-dessous pour commencer."
+      "en": "Welcome to MT5 Trade Copier! 🚀\n\nThis bot helps you purchase and manage your trade copying license.\n\nType /help for a list of commands, or use the buttons below.",
+      "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous."
+    },
+    "help": {
+      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/status - Check your license status\n/unbind - Unbind your MT5 account (allows switching)\n/help - Show this help\n\nYou can also use the buttons below.",
+      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5 (permet de changer)\n/help - Afficher cette aide\n\nVous pouvez aussi utiliser les boutons ci-dessous."
     },
     "main_menu": {
       "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
