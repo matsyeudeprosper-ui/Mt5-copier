@@ -43,8 +43,8 @@
       "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous."
     },
     "help": {
-      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/status - Check your license status\n/unbind - Unbind your MT5 account (allows switching)\n/help - Show this help\n\nYou can also use the buttons below.",
-      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5 (permet de changer)\n/help - Afficher cette aide\n\nVous pouvez aussi utiliser les boutons ci-dessous."
+      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/status - Check your license status\n/unbind - Unbind your MT5 account (allows switching)\n/help - Show this help\n/daily - Daily trading report\n/weekly - Weekly trading report\n/monthly - Monthly trading report\n/alltime - All‑time report\n/setbalance - Set your starting balance\n/deposit - Add a deposit\n\nYou can also use the buttons below.",
+      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/daily - Rapport journalier\n/weekly - Rapport hebdomadaire\n/monthly - Rapport mensuel\n/alltime - Rapport depuis le début\n/setbalance - Définir votre solde initial\n/deposit - Ajouter un dépôt\n\nVous pouvez aussi utiliser les boutons ci-dessous."
     },
     "main_menu": {
       "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
@@ -117,6 +117,58 @@
     "invalid_plan": {
       "en": "Invalid plan. Use main menu to try again.",
       "fr": "Formule invalide. Utilisez le menu principal pour réessayer."
+    },
+    "report_daily": {
+      "en": "📊 *Daily Trading Report*",
+      "fr": "📊 *Rapport de trading quotidien*"
+    },
+    "report_weekly": {
+      "en": "📊 *Weekly Trading Report*",
+      "fr": "📊 *Rapport de trading hebdomadaire*"
+    },
+    "report_monthly": {
+      "en": "📊 *Monthly Trading Report*",
+      "fr": "📊 *Rapport de trading mensuel*"
+    },
+    "report_alltime": {
+      "en": "📊 *All-Time Trading Report*",
+      "fr": "📊 *Rapport de trading depuis le début*"
+    },
+    "report_admin": {
+      "en": "📊 *Admin Master Report*",
+      "fr": "📊 *Rapport maître administrateur*"
+    },
+    "report_no_trades": {
+      "en": "No trades closed during this period.",
+      "fr": "Aucune transaction clôturée durant cette période."
+    },
+    "report_trades": {
+      "en": "▪️ Trades closed: {total}\n▪️ Win rate: {win_rate}% ({wins} wins / {losses} losses)\n▪️ Profit factor: {profit_factor}\n▪️ Net profit: {net_profit} {currency}\n▪️ Avg. win: {avg_win} {currency}\n▪️ Avg. loss: –{avg_loss} {currency}\n▪️ Max drawdown: –{max_drawdown} {currency}",
+      "fr": "▪️ Transactions clôturées : {total}\n▪️ Taux de réussite : {win_rate}% ({wins} gagnants / {losses} perdants)\n▪️ Facteur de profit : {profit_factor}\n▪️ Bénéfice net : {net_profit} {currency}\n▪️ Gain moyen : {avg_win} {currency}\n▪️ Perte moyenne : –{avg_loss} {currency}\n▪️ Drawdown max : –{max_drawdown} {currency}"
+    },
+    "report_equity": {
+      "en": "▪️ Starting balance: {start} {currency}\n▪️ Final balance: {final} {currency}\n▪️ Growth: {growth}%",
+      "fr": "▪️ Solde initial : {start} {currency}\n▪️ Solde final : {final} {currency}\n▪️ Croissance : {growth}%"
+    },
+    "setbalance_success": {
+      "en": "✅ Starting balance set to {balance} {currency}. You can now view reports with growth percentage.",
+      "fr": "✅ Solde initial défini à {balance} {currency}. Vous pouvez maintenant voir les rapports avec pourcentage de croissance."
+    },
+    "setbalance_invalid": {
+      "en": "❌ Invalid format. Use: /setbalance 10000 USD",
+      "fr": "❌ Format invalide. Utilisez : /setbalance 10000 USD"
+    },
+    "deposit_success": {
+      "en": "✅ Deposit of {amount} {currency} added. New invested capital: {new_balance} {currency}",
+      "fr": "✅ Dépôt de {amount} {currency} ajouté. Nouveau capital investi : {new_balance} {currency}"
+    },
+    "deposit_invalid": {
+      "en": "❌ Invalid amount. Use: /deposit 500",
+      "fr": "❌ Montant invalide. Utilisez : /deposit 500"
+    },
+    "admin_report_not_set": {
+      "en": "Admin starting balance not set. Please set ADMIN_STARTING_BALANCE environment variable.",
+      "fr": "Solde initial administrateur non défini. Veuillez définir la variable d'environnement ADMIN_STARTING_BALANCE."
     }
   }
 }
