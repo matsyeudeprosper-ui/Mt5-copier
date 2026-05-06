@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT5 Copier – Test Dashboard</title>
+    <style>
+        * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+        body { background: #0f172a; margin: 0; padding: 20px; color: #e2e8f0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+        .sub { color: #94a3b8; margin-bottom: 2rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 1.5rem; }
+        .card { background: #1e293b; border-radius: 1rem; padding: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.2); border: 1px solid #334155; }
+        .card h2 { font-size: 1.25rem; margin-top: 0; margin-bottom: 1rem; color: #facc15; display: flex; align-items: center; gap: 0.5rem; }
+        button { background: #3b82f6; color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.5rem; cursor: pointer; font-weight: 500; transition: background 0.2s; }
+        button:hover { background: #2563eb; }
+        button.danger { background: #ef4444; }
+        button.danger:hover { background: #dc2626; }
+        input, select, textarea { width: 100%; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 0.5rem; border-radius: 0.5rem; margin: 0.5rem 0; }
+        pre { background: #0f172a; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-size: 0.8rem; margin: 1rem 0 0; }
+        .status { margin-top: 1rem; font-size: 0.875rem; }
+        .success { color: #22c55e; }
+        .error { color: #ef4444; }
+        .flex { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+        hr { border-color: #334155; margin: 1rem 0; }
+        .small { font-size: 0.75rem; color: #64748b; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🧪 MT5 Copier – System Test Dashboard</h1>
+    <div class="sub">Run these tests to verify your license server, trade endpoints, and Telegram delivery.</div>
+
+    <div class="grid">
+        <!-- Master key test -->
+        <div class="card">
+            <h2>🔑 Master Key Validity</h2>
+            <div class="flex">
+                <input type="text" id="masterKey" placeholder="Master Key (e.g., YourMasterKeyHere123!)" value="YourMasterKeyHere123!" style="flex:1">
+                <button id="testMasterBtn">Test Master Key</button>
+            </div>
+            <div id="masterResult" class="status"></div>
+        </div>
+
+        <!-- Send test trade -->
+        <div class="card">
+            <h2>📡 Send Test Trade</h2>
+            <button id="sendTradeBtn">Send Dummy Open Trade</button>
+            <div id="tradeResult" class="status"></div>
+        </div>
+
+        <!-- List licenses (admin) -->
+        <div class="card">
+            <h2>📋 List All Licenses (Admin)</h2>
+            <div class="flex">
+                <input type="password" id="adminSecret" placeholder="ADMIN_SECRET" style="flex:1">
+                <button id="listLicensesBtn">Fetch Licenses</button>
+            </div>
+            <pre id="licensesOutput" style="margin-top:0.5rem">Click button to see licenses...</pre>
+        </div>
+
+        <!-- Validate customer license -->
+        <div class="card">
+            <h2>✅ Validate Customer License</h2>
+            <input type="text" id="customerLicense" placeholder="License Key">
+            <input type="text" id="mt5Account" placeholder="MT5 Account Number (e.g., 123456)">
+            <button id="validateBtn">Validate</button>
+            <div id="validateResult" class="status"></div>
+        </div>
+
+        <!-- Get recent trades -->
+        <div class="card">
+            <h2>📊 Recent Trades (from /trades)</h2>
+            <div class="flex">
+                <input type="text" id="tradesLicense" placeholder="License Key (master or customer)">
+                <button id="getTradesBtn">Fetch Trades</button>
+            </div>
+            <pre id="tradesOutput">Click button to see trades...</pre>
+        </div>
+
+        <!-- Simulate license delivery (Telegram) -->
+        <div class="card">
+            <h2>📲 Simulate License Delivery to Telegram</h2>
+            <div class="small">⚠️ Sends a real license key to a Telegram user for testing (no payment).</div>
+            <input type="text" id="telegramChatId" placeholder="Telegram Chat ID (e.g., 123456789)">
+            <select id="simulatePlan">
+                <option value="1month">1 Month (30 days)</option>
+                <option value="1year">1 Year (365 days)</option>
+                <option value="lifetime">Lifetime</option>
+            </select>
+            <div class="flex" style="margin-top:0.5rem">
+                <input type="password" id="simAdminSecret" placeholder="ADMIN_SECRET" style="flex:1">
+                <button id="simulateBtn">Activate & Send License</button>
+            </div>
+            <div id="simulateResult" class="status"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const baseUrl = window.location.origin;
+
+    async function apiCall(url, options = {}) {
+        try {
+            const res = await fetch(url, options);
+            const text = await res.text();
+            let data;
+            try { data = JSON.parse(text); } catch(e) { data = text; }
+            return { ok: res.ok, status: res.status, data };
+        } catch (err) {
+            return { ok: false, status: 0, data: err.message };
+        }
+    }
+
+    // Master key test
+    document.getElementById('testMasterBtn').onclick = async () => {
+        const masterKey = document.getElementById('masterKey').value;
+        const resultDiv = document.getElementById('masterResult');
+        resultDiv.innerHTML = 'Testing...';
+        const payload = {
+            action: "open",
+            magic: 999,
+            ticket: 1,
+            symbol: "TEST",
+            type: "buy",
+            volume: 0.01,
+            open_price: 1.23456,
+            sl: 0,
+            tp: 0,
+            comment: "test",
+            timestamp: new Date().toISOString().slice(0,19).replace('T',' ')
+        };
+        const res = await apiCall(baseUrl + '/copier', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Auth-Token': masterKey },
+            body: JSON.stringify(payload)
+        });
+        if (res.ok && res.data.status === 'ok')
+            resultDiv.innerHTML = '<span class="success">✅ Master key is valid.</span>';
+        else
+            resultDiv.innerHTML = `<span class="error">❌ Invalid master key (${res.status}). Response: ${JSON.stringify(res.data)}</span>`;
+    };
+
+    // Send test trade (uses master key from the input above)
+    document.getElementById('sendTradeBtn').onclick = async () => {
+        const masterKey = document.getElementById('masterKey').value;
+        const resultDiv = document.getElementById('tradeResult');
+        resultDiv.innerHTML = 'Sending trade...';
+        const payload = {
+            action: "open",
+            magic: 999,
+            ticket: 999999,
+            symbol: "EURUSD",
+            type: "buy",
+            volume: 0.1,
+            open_price: 1.12345,
+            sl: 1.12000,
+            tp: 1.13000,
+            comment: "Test from dashboard",
+            timestamp: new Date().toISOString().slice(0,19).replace('T',' ')
+        };
+        const res = await apiCall(baseUrl + '/copier', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Auth-Token': masterKey },
+            body: JSON.stringify(payload)
+        });
+        if (res.ok && res.data.status === 'ok')
+            resultDiv.innerHTML = '<span class="success">✅ Trade sent and stored successfully.</span>';
+        else
+            resultDiv.innerHTML = `<span class="error">❌ Failed to send trade (${res.status}). Response: ${JSON.stringify(res.data)}</span>`;
+    };
+
+    // List licenses (admin)
+    document.getElementById('listLicensesBtn').onclick = async () => {
+        const adminSecret = document.getElementById('adminSecret').value;
+        const pre = document.getElementById('licensesOutput');
+        pre.textContent = 'Fetching...';
+        const res = await apiCall(baseUrl + '/licenses', {
+            headers: { 'X-Admin-Token': adminSecret }
+        });
+        if (res.ok)
+            pre.textContent = JSON.stringify(res.data, null, 2);
+        else
+            pre.textContent = `Error ${res.status}: ${JSON.stringify(res.data)}`;
+    };
+
+    // Validate customer license
+    document.getElementById('validateBtn').onclick = async () => {
+        const licenseKey = document.getElementById('customerLicense').value;
+        const mt5Account = document.getElementById('mt5Account').value;
+        const resultDiv = document.getElementById('validateResult');
+        if (!licenseKey || !mt5Account) {
+            resultDiv.innerHTML = '<span class="error">Please enter both license key and MT5 account.</span>';
+            return;
+        }
+        resultDiv.innerHTML = 'Validating...';
+        const payload = { license_key: licenseKey, mt5_account: mt5Account };
+        const res = await apiCall(baseUrl + '/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (res.ok && res.data.allowed === true)
+            resultDiv.innerHTML = `<span class="success">✅ License valid. Expires: ${res.data.expires_at || 'Never'}</span>`;
+        else
+            resultDiv.innerHTML = `<span class="error">❌ Invalid license. Response: ${JSON.stringify(res.data)}</span>`;
+    };
+
+    // Get recent trades
+    document.getElementById('getTradesBtn').onclick = async () => {
+        const licenseKey = document.getElementById('tradesLicense').value;
+        const pre = document.getElementById('tradesOutput');
+        if (!licenseKey) {
+            pre.textContent = 'Please enter a license key.';
+            return;
+        }
+        pre.textContent = 'Fetching trades...';
+        const res = await apiCall(baseUrl + '/trades?since_id=0', {
+            headers: { 'X-Auth-Token': licenseKey }
+        });
+        if (res.ok)
+            pre.textContent = JSON.stringify(res.data, null, 2);
+        else
+            pre.textContent = `Error ${res.status}: ${JSON.stringify(res.data)}`;
+    };
+
+    // Simulate license delivery (Telegram)
+    document.getElementById('simulateBtn').onclick = async () => {
+        const adminSecret = document.getElementById('simAdminSecret').value;
+        const chatId = document.getElementById('telegramChatId').value;
+        const plan = document.getElementById('simulatePlan').value;
+        const resultDiv = document.getElementById('simulateResult');
+        if (!adminSecret || !chatId) {
+            resultDiv.innerHTML = '<span class="error">Please enter ADMIN_SECRET and Telegram Chat ID.</span>';
+            return;
+        }
+        resultDiv.innerHTML = 'Activating and sending...';
+        const res = await apiCall(baseUrl + '/test_activate_license', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Token': adminSecret },
+            body: JSON.stringify({ telegram_chat_id: chatId, plan: plan })
+        });
+        if (res.ok && res.data.success)
+            resultDiv.innerHTML = `<span class="success">✅ License sent to Telegram user ${chatId}. Key: ${res.data.license_key}</span>`;
+        else
+            resultDiv.innerHTML = `<span class="error">❌ Failed: ${JSON.stringify(res.data)}</span>`;
+    };
+</script>
+</body>
+</html>

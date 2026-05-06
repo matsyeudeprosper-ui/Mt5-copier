@@ -23,9 +23,6 @@ app.secret_key = secrets.token_hex(16)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Temporary storage for payment sessions (optional)
-payment_sessions = {}
-
 # ==================== DATABASE INIT ====================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -49,11 +46,20 @@ def init_db():
         telegram_chat_id TEXT,
         status TEXT,
         created_at TEXT)''')
-    # Insert master key if not exists
-    c.execute("SELECT * FROM licenses WHERE license_key = ?", (MASTER_KEY,))
-    if not c.fetchone():
+
+    # --- Master key synchronization ---
+    c.execute("SELECT license_key FROM licenses WHERE is_master = 1")
+    existing = c.fetchone()
+    if existing:
+        if existing[0] != MASTER_KEY:
+            c.execute("DELETE FROM licenses WHERE is_master = 1")
+            c.execute("INSERT INTO licenses (license_key, telegram_chat_id, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?)",
+                      (MASTER_KEY, "master", datetime.now().isoformat(), None, 1, 1))
+            logger.info(f"Master key updated to {MASTER_KEY}")
+    else:
         c.execute("INSERT INTO licenses (license_key, telegram_chat_id, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?)",
                   (MASTER_KEY, "master", datetime.now().isoformat(), None, 1, 1))
+
     conn.commit()
     conn.close()
     logger.info("Database ready")
@@ -217,7 +223,7 @@ def show_plan_selection(chat_id):
     }
     send_telegram(chat_id, "Choose your plan:", reply_markup)
 
-# ==================== NOWPAYMENTS INVOICE CREATION (WORKING PAYLOAD) ====================
+# ==================== NOWPAYMENTS INVOICE CREATION ====================
 def create_payment_invoice(chat_id, plan):
     plan_map = {"1month": 30, "1year": 365, "lifetime": None}
     price_map = {"1month": 29.99, "1year": 99.99, "lifetime": 299.99}
@@ -234,7 +240,6 @@ def create_payment_invoice(chat_id, plan):
     }
     order_id = secrets.token_hex(8)
 
-    # Minimal payload as per successful PowerShell test
     payload = {
         "price_amount": price,
         "price_currency": "usd",
@@ -257,7 +262,6 @@ def create_payment_invoice(chat_id, plan):
             send_telegram(chat_id, "Payment error: no invoice URL.")
             return
 
-        # Store order in DB
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("INSERT INTO orders (order_id, plan, license_key, telegram_chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -270,7 +274,7 @@ def create_payment_invoice(chat_id, plan):
         logger.error(f"NowPayments error: {str(e)}")
         send_telegram(chat_id, "Payment error. Please try later.")
 
-# ==================== NOWPAYMENTS WEBHOOK (IPN) ====================
+# ==================== NOWPAYMENTS WEBHOOK ====================
 @app.route("/webhook/nowpayments", methods=["POST"])
 def nowpayments_webhook():
     signature = request.headers.get("x-nowpayments-sig")
@@ -281,10 +285,8 @@ def nowpayments_webhook():
     payload_raw = request.get_data()
     logger.info(f"NowPayments webhook raw payload: {payload_raw.decode('utf-8')}")
 
-    # Verify signature (sort keys)
     try:
         data = request.get_json()
-        # Sort keys recursively
         def sort_dict(d):
             return {k: sort_dict(v) if isinstance(v, dict) else v for k, v in sorted(d.items())}
         sorted_data = sort_dict(data)
@@ -314,9 +316,7 @@ def nowpayments_webhook():
             c.execute("UPDATE orders SET license_key = ?, status = 'completed' WHERE order_id = ?", (license_key, order_id))
             conn.commit()
             expiry_str = expires_at if expires_at else "Never"
-            # Send key to user
             send_telegram(chat_id, f"✅ Payment confirmed!\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.")
-            # Notify admin
             notify_admin(f"🎉 New license sold!\nUser: {chat_id}\nPlan: {plan}\nKey: {license_key}\nExpires: {expiry_str}")
         else:
             logger.warning(f"Order not found: {order_id}")
@@ -326,7 +326,7 @@ def nowpayments_webhook():
 # ==================== FALLBACK WEB PAGES ====================
 @app.route("/buy", methods=["GET"])
 def payment_page():
-    return render_template("buy.html")  # optional, can be removed
+    return render_template("buy.html")  # optional, you can keep or remove
 
 @app.route("/payment_success", methods=["GET"])
 def payment_success():
@@ -336,8 +336,69 @@ def payment_success():
 def payment_cancel():
     return "<h1>Payment cancelled. No license issued.</h1>"
 
+# ==================== TEST DASHBOARD & SIMULATION ====================
+@app.route("/test", methods=["GET"])
+def test_dashboard():
+    """Render the test dashboard HTML."""
+    return render_template("test.html")
+
+@app.route("/licenses", methods=["GET"])
+def list_licenses():
+    """Admin: list all licenses (requires X-Admin-Token header)."""
+    if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT license_key, telegram_chat_id, activated_at, expires_at, is_master, is_active FROM licenses")
+    rows = c.fetchall()
+    conn.close()
+    licenses = []
+    for row in rows:
+        licenses.append({
+            "license_key": row[0],
+            "telegram_chat_id": row[1],
+            "activated_at": row[2],
+            "expires_at": row[3],
+            "is_master": bool(row[4]),
+            "is_active": bool(row[5])
+        })
+    return jsonify(licenses), 200
+
+@app.route("/test_activate_license", methods=["POST"])
+def test_activate_license():
+    """Admin: simulate a license purchase and send license key to a Telegram user (no payment)."""
+    if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json()
+    telegram_chat_id = data.get("telegram_chat_id")
+    plan = data.get("plan")  # "1month", "1year", "lifetime"
+    if not telegram_chat_id or not plan:
+        return jsonify({"error": "telegram_chat_id and plan required"}), 400
+    plan_days = {"1month": 30, "1year": 365, "lifetime": None}
+    if plan not in plan_days:
+        return jsonify({"error": "Invalid plan"}), 400
+    days = plan_days[plan]
+
+    # Create license directly (same as activate_license)
+    license_key, expires_at = activate_license(str(telegram_chat_id), days)
+    expiry_str = expires_at if expires_at else "Never"
+
+    # Send license key to the Telegram user
+    msg = f"🧪 <b>TEST LICENSE (no payment required)</b>\n\nYour license key:\n<code>{license_key}</code>\n\nPlan: {plan}\nExpires: {expiry_str}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input."
+    send_telegram(telegram_chat_id, msg)
+    # Also notify admin
+    notify_admin(f"🧪 Test license activated (no payment)\nUser: {telegram_chat_id}\nPlan: {plan}\nKey: {license_key}\nExpires: {expiry_str}")
+
+    return jsonify({
+        "success": True,
+        "license_key": license_key,
+        "expires_at": expires_at,
+        "message": f"License sent to Telegram user {telegram_chat_id}"
+    }), 200
+
 @app.route("/activate_license", methods=["POST"])
 def admin_activate_license():
+    """Admin: manually activate a license (with X-Admin-Token)."""
     if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json()
