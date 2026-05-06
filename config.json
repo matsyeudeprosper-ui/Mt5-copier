@@ -189,6 +189,22 @@
     "admin_report_not_set": {
       "en": "Admin starting balance not set. Please set ADMIN_STARTING_BALANCE environment variable.",
       "fr": "Solde initial administrateur non défini. Veuillez définir la variable d'environnement ADMIN_STARTING_BALANCE."
+    },
+    "calibration_success": {
+      "en": "✅ Calibration successful! Your trading reports will now show profits in {currency}. Pip value: {pip_value:.2f} {currency} per pip.",
+      "fr": "✅ Étalonnage réussi ! Vos rapports de trading afficheront désormais les bénéfices en {currency}. Valeur du pip : {pip_value:.2f} {currency} par pip."
+    },
+    "calibration_no_trade": {
+      "en": "❌ Could not find the master trade with ticket {ticket}. Make sure you are using the correct ticket from the copied trade.",
+      "fr": "❌ Impossible de trouver la transaction maître avec le ticket {ticket}. Assurez-vous d'utiliser le bon ticket de la transaction copiée."
+    },
+    "calibration_invalid": {
+      "en": "❌ Invalid data. Please send all required fields: license_key, master_ticket, closed_pips, real_profit, currency.",
+      "fr": "❌ Données invalides. Veuillez envoyer tous les champs requis : license_key, master_ticket, closed_pips, real_profit, currency."
+    },
+    "calibration_already_exists": {
+      "en": "ℹ️ Calibration already exists for this license. To recalibrate, first delete your pip value (admin only).",
+      "fr": "ℹ️ Un étalonnage existe déjà pour cette licence. Pour le refaire, supprimez d'abord la valeur (admin uniquement)."
     }
   }
 }

@@ -24,11 +24,28 @@ def get_trades_from_date(start_date):
     conn.close()
     return rows
 
-def calculate_stats(trades):
-    """Compute statistics from list of close trades (each row includes close_profit)."""
+def get_pip_value_and_currency(telegram_chat_id):
+    """Return (pip_value, currency) from user_settings, or (None, None) if not set."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT pip_value, base_currency FROM user_settings WHERE telegram_chat_id = ?", (telegram_chat_id,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0] is not None:
+        return row[0], row[1]
+    return None, "USD"
+
+def calculate_stats(trades, pip_value=None):
+    """
+    Compute statistics from list of close trades.
+    Each trade row: ... close_profit (pips).
+    If pip_value is given, multiply pips by pip_value to get profit in currency.
+    """
     if not trades:
         return None
-    profits = [row[9] for row in trades]  # close_profit (in currency, e.g., USD)
+    profits = [row[9] for row in trades]  # close_profit (in pips)
+    if pip_value is not None:
+        profits = [p * pip_value for p in profits]
     wins = [p for p in profits if p > 0]
     losses = [p for p in profits if p < 0]
     total_trades = len(profits)
@@ -41,7 +58,7 @@ def calculate_stats(trades):
     net_profit = gross_profit - gross_loss
     avg_win = gross_profit / wins_count if wins_count > 0 else 0
     avg_loss = gross_loss / losses_count if losses_count > 0 else 0
-    # Drawdown calculation based on cumulative profits
+    # Drawdown based on cumulative profits (in pips or currency)
     cumulative = np.cumsum(profits)
     running_max = np.maximum.accumulate(cumulative)
     drawdown = cumulative - running_max

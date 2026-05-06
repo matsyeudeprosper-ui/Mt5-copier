@@ -65,7 +65,9 @@ def init_db():
         telegram_chat_id TEXT PRIMARY KEY,
         starting_balance REAL,
         base_currency TEXT DEFAULT 'USD',
-        deposits TEXT DEFAULT '[]'
+        deposits TEXT DEFAULT '[]',
+        pip_value REAL,
+        currency TEXT
     )''')
 
     # Master key sync
@@ -255,28 +257,59 @@ def export_csv():
     writer.writerows(rows)
     return output.getvalue(), 200, {"Content-Type":"text/csv","Content-Disposition":"attachment;filename=trades.csv"}
 
-# ==================== USER SETTINGS (for reporting) ====================
-def get_user_balance(chat_id):
+# ==================== USER SETTINGS (for reporting and calibration) ====================
+def get_user_settings(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT starting_balance, base_currency, deposits FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
+    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
     row = c.fetchone()
     conn.close()
     if row:
-        start, currency, deposits_json = row
+        start, currency, deposits_json, pip_value, pip_currency = row
         deposits = json.loads(deposits_json) if deposits_json else []
         total_deposits = sum(deposits) if deposits else 0
         effective_start = start + total_deposits if start else 0
-        return effective_start, currency, start, deposits
-    return 0, "USD", None, []
+        return {
+            "starting_balance": start,
+            "base_currency": currency,
+            "deposits": deposits,
+            "effective_start": effective_start,
+            "pip_value": pip_value,
+            "pip_currency": pip_currency
+        }
+    return {
+        "starting_balance": None,
+        "base_currency": "USD",
+        "deposits": [],
+        "effective_start": 0,
+        "pip_value": None,
+        "pip_currency": None
+    }
 
-def set_user_balance(chat_id, balance, currency="USD"):
+def set_user_settings(chat_id, starting_balance=None, base_currency=None, pip_value=None, pip_currency=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits) VALUES (?, ?, ?, ?)",
-              (str(chat_id), balance, currency, "[]"))
+    # Get current values
+    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
+    row = c.fetchone()
+    if row:
+        start = starting_balance if starting_balance is not None else row[0]
+        curr = base_currency if base_currency is not None else row[1]
+        deposits_json = row[2] if row[2] else "[]"
+        pip_val = pip_value if pip_value is not None else row[3]
+        pip_curr = pip_currency if pip_currency is not None else row[4]
+        c.execute("UPDATE user_settings SET starting_balance = ?, base_currency = ?, pip_value = ?, currency = ? WHERE telegram_chat_id = ?",
+                  (start, curr, pip_val, pip_curr, str(chat_id)))
+    else:
+        start = starting_balance if starting_balance is not None else 0
+        curr = base_currency if base_currency is not None else "USD"
+        c.execute("INSERT INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits, pip_value, currency) VALUES (?, ?, ?, ?, ?, ?)",
+                  (str(chat_id), start, curr, "[]", pip_value, pip_currency))
     conn.commit()
     conn.close()
+
+def set_pip_calibration(chat_id, pip_value, currency):
+    set_user_settings(chat_id, pip_value=pip_value, pip_currency=currency)
 
 def add_deposit(chat_id, amount):
     conn = sqlite3.connect(DB_PATH)
@@ -289,46 +322,169 @@ def add_deposit(chat_id, amount):
     conn.commit()
     conn.close()
 
-# ==================== REPORTING (using reporting.py) ====================
-import reporting  # custom module
+# ==================== CALIBRATION ENDPOINT ====================
+@app.route("/calibrate_pip", methods=["POST"])
+def calibrate_pip():
+    """Called once by receiver EA to set pip value and currency."""
+    if not request.is_json:
+        return jsonify({"error": "JSON required"}), 400
+    data = request.get_json()
+    license_key = data.get("license_key")
+    master_ticket = data.get("master_ticket")
+    closed_pips = data.get("closed_pips")
+    real_profit = data.get("real_profit")
+    currency = data.get("currency", "USD").upper()
 
-def format_report_text(stats, period_key, currency="USD", start_balance=None, lang="en"):
+    if not all([license_key, master_ticket, closed_pips, real_profit]):
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Find the license to get telegram_chat_id
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT telegram_chat_id FROM licenses WHERE license_key = ? AND is_master = 0", (license_key,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Invalid license key"}), 401
+    chat_id = row[0]
+
+    # Check if already calibrated
+    settings = get_user_settings(chat_id)
+    if settings["pip_value"] is not None:
+        conn.close()
+        return jsonify({"error": "Calibration already exists for this license"}), 400
+
+    # Find the master trade (close action) with that ticket
+    c.execute("SELECT close_profit FROM trades WHERE action = 'close' AND ticket = ?", (str(master_ticket),))
+    trade_row = c.fetchone()
+    conn.close()
+
+    if not trade_row:
+        # Could not find the master trade
+        msg = MESSAGES["calibration_no_trade"]["en"].format(ticket=master_ticket)
+        return jsonify({"error": msg}), 404
+
+    master_pips = trade_row[0]  # close_profit in pips
+    if master_pips == 0:
+        return jsonify({"error": "Master trade pip difference is zero. Cannot calibrate."}), 400
+
+    # Calculate pip value
+    pip_value = real_profit / closed_pips
+    if pip_value <= 0:
+        return jsonify({"error": "Invalid pip value (must be positive)."}), 400
+
+    # Store
+    set_pip_calibration(chat_id, pip_value, currency)
+
+    # Send success message to user (via Telegram)
+    msg = MESSAGES["calibration_success"]["en"].format(currency=currency, pip_value=pip_value)
+    send_telegram(chat_id, msg)
+
+    return jsonify({
+        "success": True,
+        "pip_value": pip_value,
+        "currency": currency,
+        "message": "Calibration successful"
+    }), 200
+
+# ==================== REPORTING ====================
+import reporting
+
+def format_report_text(stats, period_key, currency="USD", start_balance=None, lang="en", pip_value=None, pip_currency=None):
     if not stats:
         return MESSAGES["report_no_trades"][lang]
     msg = MESSAGES[f"report_{period_key}"][lang] + "\n\n"
+    # If currency is provided (pip_value used), show profits in that currency.
+    # Otherwise, we keep pips (no currency symbol).
+    if pip_value is not None:
+        net_profit_str = f"{stats['net_profit']:.2f} {pip_currency}"
+        avg_win_str = f"{stats['avg_win']:.2f} {pip_currency}"
+        avg_loss_str = f"{stats['avg_loss']:.2f} {pip_currency}"
+        max_dd_str = f"{stats['max_drawdown']:.2f} {pip_currency}"
+        currency_symbol = pip_currency
+    else:
+        # Use pips
+        net_profit_str = f"{stats['net_profit']:.2f} pips"
+        avg_win_str = f"{stats['avg_win']:.2f} pips"
+        avg_loss_str = f"{stats['avg_loss']:.2f} pips"
+        max_dd_str = f"{stats['max_drawdown']:.2f} pips"
+        currency_symbol = "pips"
+
     msg += MESSAGES["report_trades"][lang].format(
         total=stats['total_trades'],
         win_rate=stats['win_rate'],
         wins=stats['wins'],
         losses=stats['losses'],
         profit_factor=stats['profit_factor'],
-        net_profit=stats['net_profit'],
-        currency=currency,
-        avg_win=stats['avg_win'],
-        avg_loss=stats['avg_loss'],
-        max_drawdown=stats['max_drawdown']
+        net_profit=net_profit_str,
+        currency=currency_symbol,
+        avg_win=avg_win_str,
+        avg_loss=avg_loss_str,
+        max_drawdown=max_dd_str
     )
-    if start_balance is not None and start_balance > 0:
+    if start_balance is not None and start_balance > 0 and pip_value is not None:
+        # Only show growth if calibrated
         final_balance = start_balance + stats['net_profit']
         growth = (stats['net_profit'] / start_balance) * 100
         msg += "\n\n" + MESSAGES["report_equity"][lang].format(
             start=round(start_balance, 2),
             final=round(final_balance, 2),
             growth=round(growth, 2),
-            currency=currency
+            currency=currency_symbol
         )
     return msg
 
-def show_report_menu(chat_id, lang):
-    reply_markup = {
-        "inline_keyboard": [
-            [{"text": MESSAGES["report_daily_btn"][lang], "callback_data": "report_daily"}],
-            [{"text": MESSAGES["report_weekly_btn"][lang], "callback_data": "report_weekly"}],
-            [{"text": MESSAGES["report_monthly_btn"][lang], "callback_data": "report_monthly"}],
-            [{"text": MESSAGES["report_alltime_btn"][lang], "callback_data": "report_alltime"}]
-        ]
-    }
-    send_telegram(chat_id, MESSAGES["report_menu_title"][lang], reply_markup)
+def handle_report(chat_id, period, lang):
+    # Get user's license purchase date (first activation)
+    purchase_date = reporting.get_license_purchase_date(str(chat_id))
+    if not purchase_date:
+        send_telegram(chat_id, "You don't have an active license. Buy one first to see reports.")
+        return
+    # Get trades from purchase date until now
+    trades = reporting.get_trades_from_date(purchase_date)
+    # Filter by period
+    now = datetime.now()
+    if period == "daily":
+        cutoff = now - timedelta(days=1)
+        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
+    elif period == "weekly":
+        cutoff = now - timedelta(days=7)
+        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
+    elif period == "monthly":
+        cutoff = now - timedelta(days=30)
+        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
+    elif period == "alltime":
+        trades = trades
+    else:
+        send_telegram(chat_id, "Invalid period.")
+        return
+
+    settings = get_user_settings(chat_id)
+    pip_value = settings["pip_value"]
+    pip_currency = settings["pip_currency"] or "USD"
+    stats = reporting.calculate_stats(trades, pip_value=pip_value)
+    start_balance = settings["effective_start"] if settings["effective_start"] > 0 else None
+    msg = format_report_text(stats, period, pip_currency, start_balance, lang, pip_value, pip_currency)
+    send_telegram(chat_id, msg)
+
+def handle_admin_report(chat_id, lang):
+    if str(chat_id) != TELEGRAM_CHAT_ID:
+        send_telegram(chat_id, "Unauthorized. This command is for the bot admin only.")
+        return
+    if ADMIN_STARTING_BALANCE <= 0:
+        send_telegram(chat_id, MESSAGES["admin_report_not_set"][lang])
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM trades WHERE action = 'close' ORDER BY timestamp ASC")
+    rows = c.fetchall()
+    conn.close()
+    # Admin report always in USD (or pips? we choose USD for admin)
+    # For admin we use pip_value = 1 (since master trades are in actual profit maybe? Actually close_profit is in pips)
+    # Admin report is for master strategy, so we show in pips (no currency conversion)
+    stats = reporting.calculate_stats(rows, pip_value=None)
+    msg = format_report_text(stats, "admin", "USD", ADMIN_STARTING_BALANCE, lang, pip_value=None, pip_currency="pips")
+    send_telegram(chat_id, msg)
 
 # ==================== TELEGRAM BOT ====================
 def main_menu_markup(lang):
@@ -396,7 +552,7 @@ def telegram_webhook():
                 try:
                     balance = float(parts[1])
                     currency = parts[2] if len(parts) >= 3 else "USD"
-                    set_user_balance(chat_id, balance, currency.upper())
+                    set_user_settings(chat_id, starting_balance=balance, base_currency=currency.upper())
                     send_telegram(chat_id, MESSAGES["setbalance_success"][lang].format(balance=balance, currency=currency.upper()))
                 except:
                     send_telegram(chat_id, MESSAGES["setbalance_invalid"][lang])
@@ -408,7 +564,9 @@ def telegram_webhook():
                 try:
                     amount = float(parts[1])
                     add_deposit(chat_id, amount)
-                    effective, currency, _, _ = get_user_balance(chat_id)
+                    settings = get_user_settings(chat_id)
+                    effective = settings["effective_start"]
+                    currency = settings["base_currency"]
                     send_telegram(chat_id, MESSAGES["deposit_success"][lang].format(amount=amount, currency=currency, new_balance=effective))
                 except:
                     send_telegram(chat_id, MESSAGES["deposit_invalid"][lang])
@@ -436,6 +594,20 @@ def telegram_webhook():
             send_telegram(chat_id, MESSAGES["invalid_option"][lang])
         answer_callback(query["id"])
     return "OK", 200
+
+def show_report_menu(chat_id, lang):
+    reply_markup = {
+        "inline_keyboard": [
+            [{"text": MESSAGES["report_daily_btn"][lang], "callback_data": "report_daily"}],
+            [{"text": MESSAGES["report_weekly_btn"][lang], "callback_data": "report_weekly"}],
+            [{"text": MESSAGES["report_monthly_btn"][lang], "callback_data": "report_monthly"}],
+            [{"text": MESSAGES["report_alltime_btn"][lang], "callback_data": "report_alltime"}]
+        ]
+    }
+    send_telegram(chat_id, MESSAGES["report_menu_title"][lang], reply_markup)
+
+def generate_report(chat_id, period, lang):
+    handle_report(chat_id, period, lang)
 
 def check_license_status(chat_id, lang):
     conn = sqlite3.connect(DB_PATH)
@@ -518,53 +690,6 @@ def create_payment_invoice(chat_id, plan_id, lang):
     except Exception as e:
         logger.error(f"NowPayments error: {str(e)}")
         send_telegram(chat_id, MESSAGES["payment_error"][lang])
-
-def generate_report(chat_id, period, lang):
-    # Get user's license purchase date (first activation)
-    purchase_date = reporting.get_license_purchase_date(str(chat_id))
-    if not purchase_date:
-        send_telegram(chat_id, "You don't have an active license. Buy one first to see reports.")
-        return
-    # Get trades from purchase date until now
-    trades = reporting.get_trades_from_date(purchase_date)
-    # Filter by period
-    now = datetime.now()
-    if period == "daily":
-        cutoff = now - timedelta(days=1)
-        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
-    elif period == "weekly":
-        cutoff = now - timedelta(days=7)
-        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
-    elif period == "monthly":
-        cutoff = now - timedelta(days=30)
-        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
-    elif period == "alltime":
-        trades = trades  # all trades from purchase date
-    else:
-        send_telegram(chat_id, "Invalid period.")
-        return
-    stats = reporting.calculate_stats(trades)
-    effective_balance, currency, _, _ = get_user_balance(chat_id)
-    msg = format_report_text(stats, period, currency, effective_balance if effective_balance > 0 else None, lang)
-    send_telegram(chat_id, msg)
-
-def handle_admin_report(chat_id, lang):
-    # Only admin (the bot owner) can use this command
-    if str(chat_id) != TELEGRAM_CHAT_ID:
-        send_telegram(chat_id, "Unauthorized. This command is for the bot admin only.")
-        return
-    if ADMIN_STARTING_BALANCE <= 0:
-        send_telegram(chat_id, MESSAGES["admin_report_not_set"][lang])
-        return
-    # Get all trades from the very beginning
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM trades WHERE action = 'close' ORDER BY timestamp ASC")
-    rows = c.fetchall()
-    conn.close()
-    stats = reporting.calculate_stats(rows)
-    msg = format_report_text(stats, "admin", "USD", ADMIN_STARTING_BALANCE, lang)
-    send_telegram(chat_id, msg)
 
 # ==================== NOWPAYMENTS WEBHOOK ====================
 @app.route("/webhook/nowpayments", methods=["POST"])
