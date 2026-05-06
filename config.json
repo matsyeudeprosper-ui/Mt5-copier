@@ -43,8 +43,8 @@
       "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous."
     },
     "help": {
-      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report (daily/weekly/monthly/all time)\n/setbalance - Set your starting balance\n/deposit - Add a deposit\n\nYou can also use the buttons below.",
-      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/setbalance - Définir votre solde initial\n/deposit - Ajouter un dépôt\n\nVous pouvez aussi utiliser les boutons ci-dessous."
+      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/trial - Start a 7-day free trial\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report\n/setbalance - Set your starting balance\n/deposit - Add a deposit\n\nYou can also use the buttons below.",
+      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/trial - Essai gratuit de 7 jours\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/setbalance - Définir votre solde initial\n/deposit - Ajouter un dépôt\n\nVous pouvez aussi utiliser les boutons ci-dessous."
     },
     "main_menu": {
       "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
@@ -205,6 +205,18 @@
     "calibration_already_exists": {
       "en": "ℹ️ Calibration already exists for this license. To recalibrate, first delete your pip value (admin only).",
       "fr": "ℹ️ Un étalonnage existe déjà pour cette licence. Pour le refaire, supprimez d'abord la valeur (admin uniquement)."
+    },
+    "trial_success": {
+      "en": "🎉 Your 7-day trial has been activated!\n\nYour license key:\n<code>{key}</code>\n\nExpires: {expires}\n\nEnter this key in your EA's CopierSecretKey (or LicenseKey) input.\n\nAfter the trial, you can purchase a license with /buy – your same key will be extended.",
+      "fr": "🎉 Votre essai de 7 jours a été activé !\n\nVotre clé de licence :\n<code>{key}</code>\n\nExpire le : {expires}\n\nSaisissez cette clé dans le champ CopierSecretKey (ou LicenseKey) de votre EA.\n\nAprès l'essai, vous pouvez acheter une licence avec /buy – votre même clé sera prolongée."
+    },
+    "trial_already_exists": {
+      "en": "You already have an active license (trial or paid). Only one license per user is allowed.",
+      "fr": "Vous avez déjà une licence active (essai ou payante). Une seule licence par utilisateur est autorisée."
+    },
+    "trial_not_available": {
+      "en": "Trial is not available for your account (you may have already used it).",
+      "fr": "L'essai n'est pas disponible pour votre compte (vous l'avez peut-être déjà utilisé)."
     }
   }
 }

@@ -47,7 +47,8 @@ def init_db():
         activated_at TEXT,
         expires_at TEXT,
         is_master INTEGER DEFAULT 0,
-        is_active INTEGER DEFAULT 1)''')
+        is_active INTEGER DEFAULT 1,
+        is_trial INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS license_activations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         license_key TEXT,
@@ -76,12 +77,12 @@ def init_db():
     if existing:
         if existing[0] != MASTER_KEY:
             c.execute("DELETE FROM licenses WHERE is_master = 1")
-            c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                      (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1))
+            c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active, is_trial) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                      (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1, 0))
             logger.info(f"Master key updated to {MASTER_KEY}")
     else:
-        c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                  (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1))
+        c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active, is_trial) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                  (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1, 0))
 
     conn.commit()
     conn.close()
@@ -111,21 +112,24 @@ def notify_admin(message):
 def generate_license_key():
     return secrets.token_hex(16).upper()
 
-def activate_license(telegram_chat_id, expires_days):
+def activate_license(telegram_chat_id, expires_days, is_trial=False):
     """
     Activate or extend a license for a given Telegram user.
+    If is_trial=True, create a trial license (expires after expires_days).
+    If a license already exists (trial or paid), extend it (unless it's a trial and we are creating a paid one, etc.)
     Returns (license_key, expires_at)
     """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Check if user already has an active non‑master license
-    c.execute("SELECT license_key, expires_at FROM licenses WHERE telegram_chat_id = ? AND is_master = 0 ORDER BY expires_at DESC LIMIT 1", (telegram_chat_id,))
+    # Check if user already has any non‑master license
+    c.execute("SELECT license_key, expires_at, is_trial FROM licenses WHERE telegram_chat_id = ? AND is_master = 0 ORDER BY expires_at DESC LIMIT 1", (telegram_chat_id,))
     row = c.fetchone()
     now = datetime.now()
     if row:
         # Existing license found – extend it
         license_key = row[0]
         old_expiry = row[1]
+        old_is_trial = row[2]
         if expires_days is None:
             new_expiry = None
         else:
@@ -137,7 +141,11 @@ def activate_license(telegram_chat_id, expires_days):
                     new_expiry = (now + timedelta(days=expires_days)).isoformat()
             else:
                 new_expiry = None
-        c.execute("UPDATE licenses SET expires_at = ? WHERE license_key = ?", (new_expiry, license_key))
+        # If we are creating a paid license from a trial, set is_trial=0
+        if is_trial == False and old_is_trial == 1:
+            c.execute("UPDATE licenses SET expires_at = ?, is_trial = 0 WHERE license_key = ?", (new_expiry, license_key))
+        else:
+            c.execute("UPDATE licenses SET expires_at = ? WHERE license_key = ?", (new_expiry, license_key))
         conn.commit()
         conn.close()
         return license_key, new_expiry
@@ -146,8 +154,8 @@ def activate_license(telegram_chat_id, expires_days):
         license_key = generate_license_key()
         activated_at = now.isoformat()
         expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
-        c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active)
-                     VALUES (?, ?, ?, ?, ?, 0, 1)''', (license_key, telegram_chat_id, None, activated_at, expires_at))
+        c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active, is_trial)
+                     VALUES (?, ?, ?, ?, ?, 0, 1, ?)''', (license_key, telegram_chat_id, None, activated_at, expires_at, 1 if is_trial else 0))
         conn.commit()
         conn.close()
         return license_key, expires_at
@@ -168,12 +176,12 @@ def is_license_valid(license_key, require_master=False, mt5_account=None):
             return False
         return True
     else:
-        c.execute("SELECT expires_at, is_active, bound_account FROM licenses WHERE license_key = ? AND is_master = 0", (license_key,))
+        c.execute("SELECT expires_at, is_active, bound_account, is_trial FROM licenses WHERE license_key = ? AND is_master = 0", (license_key,))
         row = c.fetchone()
         if not row:
             conn.close()
             return False
-        expires_at, is_active, bound_account = row
+        expires_at, is_active, bound_account, is_trial = row
         if not is_active:
             conn.close()
             return False
@@ -257,7 +265,7 @@ def export_csv():
     writer.writerows(rows)
     return output.getvalue(), 200, {"Content-Type":"text/csv","Content-Disposition":"attachment;filename=trades.csv"}
 
-# ==================== USER SETTINGS (for reporting and calibration) ====================
+# ==================== USER SETTINGS ====================
 def get_user_settings(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -289,7 +297,6 @@ def get_user_settings(chat_id):
 def set_user_settings(chat_id, starting_balance=None, base_currency=None, pip_value=None, pip_currency=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Get current values
     c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
     row = c.fetchone()
     if row:
@@ -325,7 +332,6 @@ def add_deposit(chat_id, amount):
 # ==================== CALIBRATION ENDPOINT ====================
 @app.route("/calibrate_pip", methods=["POST"])
 def calibrate_pip():
-    """Called once by receiver EA to set pip value and currency."""
     if not request.is_json:
         return jsonify({"error": "JSON required"}), 400
     data = request.get_json()
@@ -338,7 +344,6 @@ def calibrate_pip():
     if not all([license_key, master_ticket, closed_pips, real_profit]):
         return jsonify({"error": "Missing required fields"}), 400
 
-    # Find the license to get telegram_chat_id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT telegram_chat_id FROM licenses WHERE license_key = ? AND is_master = 0", (license_key,))
@@ -348,35 +353,28 @@ def calibrate_pip():
         return jsonify({"error": "Invalid license key"}), 401
     chat_id = row[0]
 
-    # Check if already calibrated
     settings = get_user_settings(chat_id)
     if settings["pip_value"] is not None:
         conn.close()
         return jsonify({"error": "Calibration already exists for this license"}), 400
 
-    # Find the master trade (close action) with that ticket
     c.execute("SELECT close_profit FROM trades WHERE action = 'close' AND ticket = ?", (str(master_ticket),))
     trade_row = c.fetchone()
     conn.close()
 
     if not trade_row:
-        # Could not find the master trade
         msg = MESSAGES["calibration_no_trade"]["en"].format(ticket=master_ticket)
         return jsonify({"error": msg}), 404
 
-    master_pips = trade_row[0]  # close_profit in pips
+    master_pips = trade_row[0]
     if master_pips == 0:
         return jsonify({"error": "Master trade pip difference is zero. Cannot calibrate."}), 400
 
-    # Calculate pip value
     pip_value = real_profit / closed_pips
     if pip_value <= 0:
         return jsonify({"error": "Invalid pip value (must be positive)."}), 400
 
-    # Store
     set_pip_calibration(chat_id, pip_value, currency)
-
-    # Send success message to user (via Telegram)
     msg = MESSAGES["calibration_success"]["en"].format(currency=currency, pip_value=pip_value)
     send_telegram(chat_id, msg)
 
@@ -394,8 +392,6 @@ def format_report_text(stats, period_key, currency="USD", start_balance=None, la
     if not stats:
         return MESSAGES["report_no_trades"][lang]
     msg = MESSAGES[f"report_{period_key}"][lang] + "\n\n"
-    # If currency is provided (pip_value used), show profits in that currency.
-    # Otherwise, we keep pips (no currency symbol).
     if pip_value is not None:
         net_profit_str = f"{stats['net_profit']:.2f} {pip_currency}"
         avg_win_str = f"{stats['avg_win']:.2f} {pip_currency}"
@@ -403,7 +399,6 @@ def format_report_text(stats, period_key, currency="USD", start_balance=None, la
         max_dd_str = f"{stats['max_drawdown']:.2f} {pip_currency}"
         currency_symbol = pip_currency
     else:
-        # Use pips
         net_profit_str = f"{stats['net_profit']:.2f} pips"
         avg_win_str = f"{stats['avg_win']:.2f} pips"
         avg_loss_str = f"{stats['avg_loss']:.2f} pips"
@@ -423,7 +418,6 @@ def format_report_text(stats, period_key, currency="USD", start_balance=None, la
         max_drawdown=max_dd_str
     )
     if start_balance is not None and start_balance > 0 and pip_value is not None:
-        # Only show growth if calibrated
         final_balance = start_balance + stats['net_profit']
         growth = (stats['net_profit'] / start_balance) * 100
         msg += "\n\n" + MESSAGES["report_equity"][lang].format(
@@ -435,14 +429,11 @@ def format_report_text(stats, period_key, currency="USD", start_balance=None, la
     return msg
 
 def handle_report(chat_id, period, lang):
-    # Get user's license purchase date (first activation)
     purchase_date = reporting.get_license_purchase_date(str(chat_id))
     if not purchase_date:
         send_telegram(chat_id, "You don't have an active license. Buy one first to see reports.")
         return
-    # Get trades from purchase date until now
     trades = reporting.get_trades_from_date(purchase_date)
-    # Filter by period
     now = datetime.now()
     if period == "daily":
         cutoff = now - timedelta(days=1)
@@ -479,9 +470,6 @@ def handle_admin_report(chat_id, lang):
     c.execute("SELECT * FROM trades WHERE action = 'close' ORDER BY timestamp ASC")
     rows = c.fetchall()
     conn.close()
-    # Admin report always in USD (or pips? we choose USD for admin)
-    # For admin we use pip_value = 1 (since master trades are in actual profit maybe? Actually close_profit is in pips)
-    # Admin report is for master strategy, so we show in pips (no currency conversion)
     stats = reporting.calculate_stats(rows, pip_value=None)
     msg = format_report_text(stats, "admin", "USD", ADMIN_STARTING_BALANCE, lang, pip_value=None, pip_currency="pips")
     send_telegram(chat_id, msg)
@@ -518,7 +506,6 @@ def telegram_webhook():
         return "No update", 400
     logger.info(f"Telegram update: {json.dumps(update)}")
 
-    # Language detection
     lang = "en"
     if "message" in update and "from" in update["message"]:
         lang = update["message"]["from"].get("language_code", "en")
@@ -536,6 +523,8 @@ def telegram_webhook():
             send_telegram(chat_id, MESSAGES["welcome"][lang], reply_markup=main_menu_markup(lang))
         elif text == "/buy":
             send_telegram(chat_id, MESSAGES["choose_plan"][lang], reply_markup=plan_selection_markup(lang))
+        elif text == "/trial":
+            handle_trial(chat_id, lang)
         elif text == "/status":
             check_license_status(chat_id, lang)
         elif text == "/unbind":
@@ -589,7 +578,7 @@ def telegram_webhook():
             create_payment_invoice(chat_id, plan_id, lang)
         elif data.startswith("report_"):
             period = data.replace("report_", "")
-            generate_report(chat_id, period, lang)
+            handle_report(chat_id, period, lang)
         else:
             send_telegram(chat_id, MESSAGES["invalid_option"][lang])
         answer_callback(query["id"])
@@ -606,22 +595,20 @@ def show_report_menu(chat_id, lang):
     }
     send_telegram(chat_id, MESSAGES["report_menu_title"][lang], reply_markup)
 
-def generate_report(chat_id, period, lang):
-    handle_report(chat_id, period, lang)
-
 def check_license_status(chat_id, lang):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT license_key, bound_account, expires_at FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
+    c.execute("SELECT license_key, bound_account, expires_at, is_trial FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
     row = c.fetchone()
     conn.close()
     if not row:
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
-    license_key, bound_account, expires_at = row
+    license_key, bound_account, expires_at, is_trial = row
     expiry_str = expires_at if expires_at else MESSAGES["never"][lang]
     bound_str = bound_account if bound_account else MESSAGES["not_bound"][lang]
-    msg = MESSAGES["license_status"][lang].format(key=license_key, bound=bound_str, expires=expiry_str)
+    trial_str = " (Trial)" if is_trial else ""
+    msg = MESSAGES["license_status"][lang].format(key=license_key, bound=bound_str, expires=expiry_str) + trial_str
     send_telegram(chat_id, msg)
 
 def unbind_license(chat_id, lang):
@@ -646,6 +633,24 @@ def unbind_license(chat_id, lang):
     send_telegram(chat_id, MESSAGES["unbind_success"][lang].format(account=bound_account))
     admin_msg = MESSAGES["admin_unbind"][lang].format(user=chat_id, key=license_key, account=bound_account)
     notify_admin(admin_msg)
+
+def handle_trial(chat_id, lang):
+    # Check if user already has any license (trial or paid)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
+    if c.fetchone():
+        conn.close()
+        send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
+        return
+    conn.close()
+    # Create trial license (7 days)
+    trial_days = 7
+    license_key, expires_at = activate_license(str(chat_id), trial_days, is_trial=True)
+    expiry_str = expires_at if expires_at else "7 days"
+    msg = MESSAGES["trial_success"][lang].format(key=license_key, expires=expiry_str)
+    send_telegram(chat_id, msg)
+    notify_admin(f"🧪 New trial license\nUser: {chat_id}\nKey: {license_key}\nExpires: {expiry_str}")
 
 def create_payment_invoice(chat_id, plan_id, lang):
     if plan_id not in PLANS:
@@ -728,7 +733,7 @@ def nowpayments_webhook():
         if row:
             plan_id, chat_id = row
             days = PLANS[plan_id]["days"]
-            license_key, expires_at = activate_license(str(chat_id), days)
+            license_key, expires_at = activate_license(str(chat_id), days, is_trial=False)
             c.execute("UPDATE orders SET license_key = ?, status = 'completed' WHERE order_id = ?", (license_key, order_id))
             conn.commit()
             expiry_str = expires_at if expires_at else MESSAGES["never"]["en"]
@@ -790,7 +795,7 @@ def list_licenses():
         return jsonify({"error": "Unauthorized"}), 401
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active FROM licenses")
+    c.execute("SELECT license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active, is_trial FROM licenses")
     rows = c.fetchall()
     conn.close()
     licenses = []
@@ -802,7 +807,8 @@ def list_licenses():
             "activated_at": row[3],
             "expires_at": row[4],
             "is_master": bool(row[5]),
-            "is_active": bool(row[6])
+            "is_active": bool(row[6]),
+            "is_trial": bool(row[7])
         })
     return jsonify(licenses), 200
 
@@ -818,7 +824,7 @@ def test_activate_license():
     if plan_id not in PLANS:
         return jsonify({"error": "Invalid plan"}), 400
     days = PLANS[plan_id]["days"]
-    license_key, expires_at = activate_license(str(telegram_chat_id), days)
+    license_key, expires_at = activate_license(str(telegram_chat_id), days, is_trial=False)
     expiry_str = expires_at if expires_at else "Never"
     plan_name = PLANS[plan_id]["name"]["en"]
     msg = MESSAGES["payment_confirmed"]["en"].format(key=license_key, plan=plan_name, expires=expiry_str)
@@ -835,7 +841,7 @@ def admin_activate_license():
     telegram_chat_id = data.get("telegram_chat_id")
     if not telegram_chat_id:
         return jsonify({"error": "telegram_chat_id required"}), 400
-    license_key, expires_at = activate_license(telegram_chat_id, expires_days)
+    license_key, expires_at = activate_license(telegram_chat_id, expires_days, is_trial=False)
     return jsonify({"license_key": license_key, "expires_at": expires_at}), 200
 
 @app.route("/", methods=["GET"])
