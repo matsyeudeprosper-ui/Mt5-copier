@@ -37,12 +37,24 @@ logger = logging.getLogger(__name__)
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Core tables
+    # Original trades table (for backward compatibility)
     c.execute('''CREATE TABLE IF NOT EXISTS trades (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         action TEXT, magic TEXT, ticket TEXT, symbol TEXT, type TEXT,
         volume REAL, open_price REAL, sl REAL, tp REAL, close_profit REAL,
         comment TEXT, timestamp TEXT, received_at TEXT)''')
+    # New messages table for sequence‑based event log
+    c.execute('''CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seq INTEGER UNIQUE,
+        action TEXT,
+        symbol TEXT,
+        magic TEXT,
+        data TEXT,
+        timestamp TEXT,
+        created_at TEXT
+    )''')
+    # Licenses table
     c.execute('''CREATE TABLE IF NOT EXISTS licenses (
         license_key TEXT PRIMARY KEY,
         telegram_chat_id TEXT,
@@ -79,25 +91,25 @@ def init_db():
         report_frequency TEXT DEFAULT 'daily'
     )''')
 
-    # --- Migrations: add missing columns to user_settings (for existing databases) ---
+    # --- Migrations: add missing columns to user_settings ---
     c.execute("PRAGMA table_info(user_settings)")
-    existing_columns = [col[1] for col in c.fetchall()]
-    if "hard_stop_hit" not in existing_columns:
+    existing_cols = [col[1] for col in c.fetchall()]
+    if "hard_stop_hit" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN hard_stop_hit INTEGER DEFAULT 0")
-    if "trial_used" not in existing_columns:
+    if "trial_used" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN trial_used INTEGER DEFAULT 0")
-    if "auto_report_enabled" not in existing_columns:
+    if "auto_report_enabled" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN auto_report_enabled INTEGER DEFAULT 0")
-    if "report_hour" not in existing_columns:
+    if "report_hour" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN report_hour INTEGER DEFAULT 20")
-    if "report_frequency" not in existing_columns:
+    if "report_frequency" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN report_frequency TEXT DEFAULT 'daily'")
-    if "pip_value" not in existing_columns:
+    if "pip_value" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN pip_value REAL")
-    if "currency" not in existing_columns:
+    if "currency" not in existing_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN currency TEXT")
 
-    # Master key sync
+    # --- Master key sync ---
     c.execute("SELECT license_key FROM licenses WHERE is_master = 1")
     existing = c.fetchone()
     if existing:
@@ -116,22 +128,18 @@ def init_db():
 
 init_db()
 
-# ==================== KEEP-ALIVE (prevents Render from sleeping) ====================
+# ==================== KEEP-ALIVE (prevent Render sleep) ====================
 def keep_alive():
-    """Ping the health endpoint every 4 minutes to keep the service awake."""
-    url = f"http://localhost:{os.environ.get('PORT', 5000)}/health"
     while True:
         time.sleep(240)  # 4 minutes
         try:
-            requests.get(url, timeout=10)
+            requests.get(f"http://localhost:{os.environ.get('PORT', 5000)}/health", timeout=10)
             logger.info("Keep-alive ping sent")
         except Exception as e:
             logger.error(f"Keep-alive ping failed: {e}")
 
-# Start the keep-alive thread (only if not in debug mode)
 if not app.debug:
-    thread = threading.Thread(target=keep_alive, daemon=True)
-    thread.start()
+    threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("Keep-alive thread started")
 
 # ==================== HELPER FUNCTIONS ====================
@@ -177,7 +185,7 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
                     new_expiry = (now + timedelta(days=expires_days)).isoformat()
             else:
                 new_expiry = None
-        if is_trial == False and old_is_trial == 1:
+        if not is_trial and old_is_trial == 1:
             c.execute("UPDATE licenses SET expires_at = ?, is_trial = 0 WHERE license_key = ?", (new_expiry, license_key))
         else:
             c.execute("UPDATE licenses SET expires_at = ? WHERE license_key = ?", (new_expiry, license_key))
@@ -239,7 +247,7 @@ def is_license_valid(license_key, require_master=False, mt5_account=None):
         conn.close()
         return True
 
-# ==================== TRADE COPYING ENDPOINTS ====================
+# ==================== TRADE COPYING ENDPOINTS (improved) ====================
 @app.route("/copier", methods=["POST"])
 def receive_trade():
     license_key = request.headers.get("X-Auth-Token")
@@ -249,20 +257,65 @@ def receive_trade():
         return jsonify({"error": "JSON required"}), 400
     data = request.get_json()
     action = data.get("action")
-    if action not in ("open", "close", "modify"):
+    allowed_actions = ("open", "close", "partial_close", "modify", "pending_open", "pending_cancel", "pending_modify")
+    if action not in allowed_actions:
         return jsonify({"error": "Invalid action"}), 400
 
+    # Extract sequence number (required)
+    seq = data.get("seq")
+    if seq is None:
+        return jsonify({"error": "Missing seq"}), 400
+
+    symbol = data.get("symbol", "")
+    magic = data.get("magic", "")
+    timestamp = data.get("timestamp", datetime.now().isoformat())
+
+    # Store in messages table
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO trades (action, magic, ticket, symbol, type, volume, open_price, sl, tp, close_profit, comment, timestamp, received_at)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-              (action, str(data.get("magic","")), str(data.get("ticket","")), data.get("symbol",""),
-               data.get("type",""), data.get("volume"), data.get("open_price"), data.get("sl"), data.get("tp"),
-               data.get("close_profit"), data.get("comment",""), data.get("timestamp",""), datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-    logger.info(f"Trade stored from master key")
-    return jsonify({"status": "ok"}), 200
+    try:
+        c.execute("INSERT INTO messages (seq, action, symbol, magic, data, timestamp, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  (seq, action, symbol, str(magic), json.dumps(data), timestamp, datetime.now().isoformat()))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Duplicate seq – ignore (already stored)
+        conn.rollback()
+    finally:
+        conn.close()
+
+    # Also store in legacy trades table for compatibility (if applicable)
+    if action == "open":
+        # Store simplified trade record
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT INTO trades (action, magic, ticket, symbol, type, volume, open_price, sl, tp, comment, timestamp, received_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      ("open", str(magic), str(data.get("ticket","")), symbol,
+                       data.get("type",""), data.get("volume"), data.get("open_price"),
+                       data.get("sl"), data.get("tp"), data.get("comment",""),
+                       timestamp, datetime.now().isoformat()))
+            conn.commit()
+            conn.close()
+        except:
+            pass
+    elif action == "close":
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''INSERT INTO trades (action, magic, ticket, close_profit, timestamp, received_at)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      ("close", str(magic), str(data.get("ticket","")), data.get("profit", 0),
+                       timestamp, datetime.now().isoformat()))
+            conn.commit()
+            conn.close()
+        except:
+            pass
+    elif action == "partial_close":
+        # optional: store in trades as a special type
+        pass
+
+    return jsonify({"status": "ok", "seq": seq}), 200
 
 @app.route("/trades", methods=["GET"])
 def get_trades():
@@ -270,15 +323,33 @@ def get_trades():
     if not license_key or not is_license_valid(license_key, require_master=False):
         return jsonify({"error": "Invalid or expired license"}), 401
 
-    since_id = request.args.get("since_id", default=0, type=int)
+    since_seq = request.args.get("since_seq", default=0, type=int)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, action, magic, ticket, symbol, type, volume, open_price, sl, tp, close_profit, comment, timestamp, received_at FROM trades WHERE id > ? ORDER BY id ASC", (since_id,))
+    # Retrieve messages with seq > since_seq, ordered by seq
+    c.execute("SELECT seq, action, symbol, magic, data, timestamp FROM messages WHERE seq > ? ORDER BY seq ASC", (since_seq,))
     rows = c.fetchall()
+    # Get current highest seq
+    c.execute("SELECT MAX(seq) FROM messages")
+    current_seq = c.fetchone()[0] or 0
     conn.close()
-    cols = ["id","action","magic","ticket","symbol","type","volume","open_price","sl","tp","close_profit","comment","timestamp","received_at"]
-    trades = [dict(zip(cols, row)) for row in rows]
-    return jsonify({"since_id": since_id, "trades": trades}), 200
+
+    messages = []
+    for row in rows:
+        seq, action, symbol, magic, data_str, timestamp = row
+        data = json.loads(data_str)
+        # Remove internal fields if needed, but keep all
+        messages.append({
+            "seq": seq,
+            "action": action,
+            "symbol": symbol,
+            "data": data
+        })
+    return jsonify({
+        "since_seq": since_seq,
+        "current_seq": current_seq,
+        "messages": messages
+    }), 200
 
 @app.route("/export", methods=["GET"])
 def export_csv():
@@ -299,7 +370,7 @@ def export_csv():
     writer.writerows(rows)
     return output.getvalue(), 200, {"Content-Type":"text/csv","Content-Disposition":"attachment;filename=trades.csv"}
 
-# ==================== USER SETTINGS ====================
+# ==================== USER SETTINGS (unchanged) ====================
 def get_user_settings(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -352,7 +423,6 @@ def set_user_settings(chat_id, **kwargs):
         params.append(str(chat_id))
         c.execute(f"UPDATE user_settings SET {', '.join(updates)} WHERE telegram_chat_id = ?", params)
     else:
-        # Insert with defaults
         cmd = "INSERT INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used, auto_report_enabled, report_hour, report_frequency) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         c.execute(cmd, (str(chat_id), kwargs.get('starting_balance', 0), kwargs.get('base_currency', 'USD'), '[]', kwargs.get('pip_value'), kwargs.get('pip_currency'), kwargs.get('hard_stop_hit', 0), kwargs.get('trial_used', 0), kwargs.get('auto_report_enabled', 0), kwargs.get('report_hour', 20), kwargs.get('report_frequency', 'daily')))
     conn.commit()
@@ -407,14 +477,12 @@ def calibrate_pip():
         conn.close()
         return jsonify({"error": "Calibration already exists"}), 400
 
+    # Find the master close message by ticket (stored in legacy trades table)
     c.execute("SELECT close_profit FROM trades WHERE action = 'close' AND ticket = ?", (str(master_ticket),))
     trade_row = c.fetchone()
     conn.close()
-
     if not trade_row:
-        msg = MESSAGES["calibration_no_trade"]["en"].format(ticket=master_ticket)
-        return jsonify({"error": msg}), 404
-
+        return jsonify({"error": "Master trade not found"}), 404
     master_pips = trade_row[0]
     if master_pips == 0:
         return jsonify({"error": "Master trade pip difference is zero"}), 400
@@ -668,7 +736,6 @@ def telegram_webhook():
 
 def show_settings_menu(chat_id, lang):
     settings = get_user_settings(chat_id)
-    auto_status = "ON" if settings["auto_report_enabled"] else "OFF"
     freq_display = MESSAGES["current_frequency"][lang].format(freq=settings["report_frequency"].capitalize())
     hour = settings["report_hour"]
     reply_markup = {
