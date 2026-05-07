@@ -6,6 +6,8 @@ import secrets
 import hmac
 import hashlib
 import requests
+import threading
+import time
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template
 
@@ -31,10 +33,11 @@ app.secret_key = secrets.token_hex(16)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== DATABASE INIT ====================
+# ==================== DATABASE INIT + MIGRATIONS ====================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Core tables
     c.execute('''CREATE TABLE IF NOT EXISTS trades (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         action TEXT, magic TEXT, ticket TEXT, symbol TEXT, type TEXT,
@@ -76,6 +79,24 @@ def init_db():
         report_frequency TEXT DEFAULT 'daily'
     )''')
 
+    # --- Migrations: add missing columns to user_settings (for existing databases) ---
+    c.execute("PRAGMA table_info(user_settings)")
+    existing_columns = [col[1] for col in c.fetchall()]
+    if "hard_stop_hit" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN hard_stop_hit INTEGER DEFAULT 0")
+    if "trial_used" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN trial_used INTEGER DEFAULT 0")
+    if "auto_report_enabled" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN auto_report_enabled INTEGER DEFAULT 0")
+    if "report_hour" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN report_hour INTEGER DEFAULT 20")
+    if "report_frequency" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN report_frequency TEXT DEFAULT 'daily'")
+    if "pip_value" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN pip_value REAL")
+    if "currency" not in existing_columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN currency TEXT")
+
     # Master key sync
     c.execute("SELECT license_key FROM licenses WHERE is_master = 1")
     existing = c.fetchone()
@@ -94,6 +115,24 @@ def init_db():
     logger.info("Database ready")
 
 init_db()
+
+# ==================== KEEP-ALIVE (prevents Render from sleeping) ====================
+def keep_alive():
+    """Ping the health endpoint every 4 minutes to keep the service awake."""
+    url = f"http://localhost:{os.environ.get('PORT', 5000)}/health"
+    while True:
+        time.sleep(240)  # 4 minutes
+        try:
+            requests.get(url, timeout=10)
+            logger.info("Keep-alive ping sent")
+        except Exception as e:
+            logger.error(f"Keep-alive ping failed: {e}")
+
+# Start the keep-alive thread (only if not in debug mode)
+if not app.debug:
+    thread = threading.Thread(target=keep_alive, daemon=True)
+    thread.start()
+    logger.info("Keep-alive thread started")
 
 # ==================== HELPER FUNCTIONS ====================
 def send_telegram(chat_id, text, reply_markup=None):
