@@ -239,8 +239,8 @@
       "fr": "Vous n'avez pas de licence active. Achetez ou essayez d'abord un essai."
     },
     "settings_title": {
-      "en": "⚙️ *Report Settings*\n\nChoose your preferences:",
-      "fr": "⚙️ *Paramètres des rapports*\n\nChoisissez vos préférences :"
+      "en": "⚙️ *Report Settings*",
+      "fr": "⚙️ *Paramètres des rapports*"
     },
     "auto_report_on": {
       "en": "✅ Auto‑reports: ON",
@@ -250,9 +250,21 @@
       "en": "❌ Auto‑reports: OFF",
       "fr": "❌ Rapports automatiques : DÉSACTIVÉS"
     },
-    "report_frequency": {
-      "en": "📅 Frequency: {freq}",
-      "fr": "📅 Fréquence : {freq}"
+    "freq_daily_btn": {
+      "en": "Daily",
+      "fr": "Quotidien"
+    },
+    "freq_weekly_btn": {
+      "en": "Weekly",
+      "fr": "Hebdomadaire"
+    },
+    "freq_monthly_btn": {
+      "en": "Monthly",
+      "fr": "Mensuel"
+    },
+    "current_frequency": {
+      "en": "📅 Current frequency: {freq}",
+      "fr": "📅 Fréquence actuelle : {freq}"
     },
     "report_hour": {
       "en": "⏰ Hour: {hour}:00 UTC",

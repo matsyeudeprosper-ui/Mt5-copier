@@ -630,16 +630,19 @@ def telegram_webhook():
 def show_settings_menu(chat_id, lang):
     settings = get_user_settings(chat_id)
     auto_status = "ON" if settings["auto_report_enabled"] else "OFF"
-    freq = settings["report_frequency"]
+    freq_display = MESSAGES["current_frequency"][lang].format(freq=settings["report_frequency"].capitalize())
     hour = settings["report_hour"]
     reply_markup = {
         "inline_keyboard": [
             [{"text": MESSAGES["auto_report_on"][lang] if settings["auto_report_enabled"] else MESSAGES["auto_report_off"][lang], "callback_data": "settings_auto_toggle"}],
-            [{"text": MESSAGES["report_frequency"][lang].format(freq=freq.capitalize()), "callback_data": "settings_freq_daily"}, {"text": MESSAGES["report_frequency"][lang].format(freq="Weekly"), "callback_data": "settings_freq_weekly"}, {"text": MESSAGES["report_frequency"][lang].format(freq="Monthly"), "callback_data": "settings_freq_monthly"}],
+            [{"text": MESSAGES["freq_daily_btn"][lang], "callback_data": "settings_freq_daily"},
+             {"text": MESSAGES["freq_weekly_btn"][lang], "callback_data": "settings_freq_weekly"},
+             {"text": MESSAGES["freq_monthly_btn"][lang], "callback_data": "settings_freq_monthly"}],
             [{"text": MESSAGES["report_hour"][lang].format(hour=hour), "callback_data": "settings_hour"}]
         ]
     }
-    send_telegram(chat_id, MESSAGES["settings_title"][lang], reply_markup)
+    menu_text = MESSAGES["settings_title"][lang] + "\n\n" + freq_display
+    send_telegram(chat_id, menu_text, reply_markup)
 
 def toggle_auto_report(chat_id, lang):
     settings = get_user_settings(chat_id)
