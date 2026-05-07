@@ -3,3 +3,4 @@ gunicorn==21.2.0
 requests==2.31.0
 setuptools>=74.1.2
 numpy>=2.3.3
+apscheduler==3.10.4

@@ -43,24 +43,8 @@
       "fr": "Bienvenue sur MT5 Trade Copier ! 🚀\n\nCe bot vous aide à acheter et gérer votre licence de copie de trading.\n\nTapez /help pour la liste des commandes, ou utilisez les boutons ci-dessous.\n\n🎁 **Nouveaux utilisateurs** : Essayez l'essai gratuit de 7 jours avec `/trial` !"
     },
     "help": {
-      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/trial - Start 7-day free trial (if available)\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report\n/about - About the strategy\n/resume - Resume trading after a hard stop\n\nYou can also use the buttons below.",
-      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/trial - Essai gratuit de 7 jours (si disponible)\n/status - Voir le statut de votre licence\n/unbind - Dissocier votre compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/about - À propos de la stratégie\n/resume - Reprendre le trading après un hard stop\n\nVous pouvez aussi utiliser les boutons ci-dessous."
-    },
-    "about": {
-      "en": "📈 *About the MT5 Trade Copier Strategy*\n\n🔹 *High Profitability* – designed to generate significant returns.\n🔹 *High Risk* – aggressive trading; losses can be large.\n🔹 *No Per‑Trade Stop Loss* – risk is managed via a global *Hard Stop*.\n🔹 *Hard Stop* – set a maximum loss amount in your EA settings. Trading stops automatically when reached. You must reset from Telegram (`/resume` command) to continue.\n🔹 *Lot Size* – calculated automatically based on your assigned Hard Stop amount. Larger Hard Stop = larger lot size and higher risk.\n🔹 *Minimum Hard Stop* – 300 USD.\n🔹 *Broker Requirements* – prefer a broker with *no commission* and *low spreads* for best results.\n🔹 *Current Instrument* – only BTC (Bitcoin) is traded.\n\nUse `/buy` to purchase a license or `/trial` to start a 7‑day free trial.",
-      "fr": "📈 *À propos de la stratégie MT5 Trade Copier*\n\n🔹 *Haute rentabilité* – conçue pour générer des rendements significatifs.\n🔹 *Risque élevé* – trading agressif ; les pertes peuvent être importantes.\n🔹 *Pas de Stop Loss par transaction* – le risque est géré via un *Hard Stop* global.\n🔹 *Hard Stop* – définissez un montant de perte maximum dans les paramètres de l'EA. Le trading s'arrête automatiquement lorsqu'il est atteint. Vous devez réinitialiser depuis Telegram (`/resume`) pour continuer.\n🔹 *Taille de lot* – calculée automatiquement en fonction du Hard Stop. Un Hard Stop plus grand = lot plus gros et risque plus élevé.\n🔹 *Hard Stop minimum* – 300 USD.\n🔹 *Courtier recommandé* – préférez un courtier *sans commission* et avec *faibles spreads* pour de meilleurs résultats.\n🔹 *Instrument actuel* – seulement BTC (Bitcoin) est tradé.\n\nUtilisez `/buy` pour acheter une licence ou `/trial` pour un essai gratuit de 7 jours."
-    },
-    "resume_success": {
-      "en": "✅ Hard stop flag cleared. You can now restart your EA – trading will resume.",
-      "fr": "✅ Flag de hard stop effacé. Vous pouvez maintenant redémarrer votre EA – le trading reprendra."
-    },
-    "no_hard_stop": {
-      "en": "ℹ️ You have no active hard stop flag. Your EA is already trading normally.",
-      "fr": "ℹ️ Vous n'avez aucun flag de hard stop actif. Votre EA trade déjà normalement."
-    },
-    "resume_not_needed": {
-      "en": "You don't have an active license. Buy or try a trial first.",
-      "fr": "Vous n'avez pas de licence active. Achetez ou essayez d'abord un essai."
+      "en": "📖 <b>Available commands</b>\n\n/start - Show main menu\n/buy - Buy a license\n/trial - Start 7-day free trial\n/status - Check your license status\n/unbind - Unbind your MT5 account\n/help - Show this help\n/report - Show trading report\n/about - About the strategy\n/resume - Resume after hard stop\n/settings - Configure automatic reports\n/sethour - Set report hour (0-23 UTC)\n\nYou can also use the buttons below.",
+      "fr": "📖 <b>Commandes disponibles</b>\n\n/start - Afficher le menu principal\n/buy - Acheter une licence\n/trial - Essai gratuit de 7 jours\n/status - Voir le statut de votre licence\n/unbind - Dissocier le compte MT5\n/help - Afficher cette aide\n/report - Afficher le rapport de trading\n/about - À propos de la stratégie\n/resume - Reprendre après un hard stop\n/settings - Configurer les rapports automatiques\n/sethour - Définir l'heure des rapports (0-23 UTC)\n\nVous pouvez aussi utiliser les boutons ci-dessous."
     },
     "main_menu": {
       "en": "📋 <b>Main Menu</b>\n\nChoose an option:",
@@ -237,6 +221,62 @@
     "trial_not_available": {
       "en": "Trial is not available for your account (you may have already used it).",
       "fr": "L'essai n'est pas disponible pour votre compte (vous l'avez peut-être déjà utilisé)."
+    },
+    "about": {
+      "en": "📈 *About the MT5 Trade Copier Strategy*\n\n🔹 *High Profitability* – designed to generate significant returns.\n🔹 *High Risk* – aggressive trading; losses can be large.\n🔹 *No Per‑Trade Stop Loss* – risk is managed via a global *Hard Stop*.\n🔹 *Hard Stop* – set a maximum loss amount in your EA settings. Trading stops automatically when reached. You must reset from Telegram (`/resume` command) to continue.\n🔹 *Lot Size* – calculated automatically based on your assigned Hard Stop amount. Larger Hard Stop = larger lot size and higher risk.\n🔹 *Minimum Hard Stop* – 300 USD.\n🔹 *Broker Requirements* – prefer a broker with *no commission* and *low spreads* for best results.\n🔹 *Current Instrument* – only BTC (Bitcoin) is traded.\n\nUse `/buy` to purchase a license or `/trial` to start a 7‑day free trial.",
+      "fr": "📈 *À propos de la stratégie MT5 Trade Copier*\n\n🔹 *Haute rentabilité* – conçue pour générer des rendements significatifs.\n🔹 *Risque élevé* – trading agressif ; les pertes peuvent être importantes.\n🔹 *Pas de Stop Loss par transaction* – le risque est géré via un *Hard Stop* global.\n🔹 *Hard Stop* – définissez un montant de perte maximum dans les paramètres de l'EA. Le trading s'arrête automatiquement lorsqu'il est atteint. Vous devez réinitialiser depuis Telegram (`/resume`) pour continuer.\n🔹 *Taille de lot* – calculée automatiquement en fonction du Hard Stop. Un Hard Stop plus grand = lot plus gros et risque plus élevé.\n🔹 *Hard Stop minimum* – 300 USD.\n🔹 *Courtier recommandé* – préférez un courtier *sans commission* et avec *faibles spreads* pour de meilleurs résultats.\n🔹 *Instrument actuel* – seulement BTC (Bitcoin) est tradé.\n\nUtilisez `/buy` pour acheter une licence ou `/trial` pour un essai gratuit de 7 jours."
+    },
+    "resume_success": {
+      "en": "✅ Hard stop flag cleared. You can now restart your EA – trading will resume.",
+      "fr": "✅ Flag de hard stop effacé. Vous pouvez maintenant redémarrer votre EA – le trading reprendra."
+    },
+    "no_hard_stop": {
+      "en": "ℹ️ You have no active hard stop flag. Your EA is already trading normally.",
+      "fr": "ℹ️ Vous n'avez aucun flag de hard stop actif. Votre EA trade déjà normalement."
+    },
+    "resume_not_needed": {
+      "en": "You don't have an active license. Buy or try a trial first.",
+      "fr": "Vous n'avez pas de licence active. Achetez ou essayez d'abord un essai."
+    },
+    "settings_title": {
+      "en": "⚙️ *Report Settings*\n\nChoose your preferences:",
+      "fr": "⚙️ *Paramètres des rapports*\n\nChoisissez vos préférences :"
+    },
+    "auto_report_on": {
+      "en": "✅ Auto‑reports: ON",
+      "fr": "✅ Rapports automatiques : ACTIVÉS"
+    },
+    "auto_report_off": {
+      "en": "❌ Auto‑reports: OFF",
+      "fr": "❌ Rapports automatiques : DÉSACTIVÉS"
+    },
+    "report_frequency": {
+      "en": "📅 Frequency: {freq}",
+      "fr": "📅 Fréquence : {freq}"
+    },
+    "report_hour": {
+      "en": "⏰ Hour: {hour}:00 UTC",
+      "fr": "⏰ Heure : {hour}:00 UTC"
+    },
+    "set_hour_prompt": {
+      "en": "Send me the hour (0-23 UTC) when you want daily/weekly/monthly reports.\nExample: /sethour 20",
+      "fr": "Envoyez l'heure (0-23 UTC) à laquelle vous voulez les rapports quotidiens/hebdomadaires/mensuels.\nExemple : /sethour 20"
+    },
+    "set_hour_success": {
+      "en": "✅ Report hour set to {hour}:00 UTC.",
+      "fr": "✅ Heure de rapport définie à {hour}:00 UTC."
+    },
+    "set_hour_invalid": {
+      "en": "❌ Invalid hour. Please enter a number between 0 and 23.",
+      "fr": "❌ Heure invalide. Veuillez entrer un nombre entre 0 et 23."
+    },
+    "auto_report_notify_on": {
+      "en": "Automatic reports are now ON. You will receive reports at {hour}:00 UTC.",
+      "fr": "Les rapports automatiques sont maintenant ACTIVÉS. Vous recevrez des rapports à {hour}:00 UTC."
+    },
+    "auto_report_notify_off": {
+      "en": "Automatic reports are now OFF. You will no longer receive scheduled reports.",
+      "fr": "Les rapports automatiques sont maintenant DÉSACTIVÉS. Vous ne recevrez plus de rapports programmés."
     }
   }
 }

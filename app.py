@@ -70,7 +70,10 @@ def init_db():
         pip_value REAL,
         currency TEXT,
         hard_stop_hit INTEGER DEFAULT 0,
-        trial_used INTEGER DEFAULT 0
+        trial_used INTEGER DEFAULT 0,
+        auto_report_enabled INTEGER DEFAULT 0,
+        report_hour INTEGER DEFAULT 20,
+        report_frequency TEXT DEFAULT 'daily'
     )''')
 
     # Master key sync
@@ -115,14 +118,8 @@ def generate_license_key():
     return secrets.token_hex(16).upper()
 
 def activate_license(telegram_chat_id, expires_days, is_trial=False):
-    """
-    Activate or extend a license for a given Telegram user.
-    If is_trial=True, create a trial license.
-    Returns (license_key, expires_at)
-    """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Check if user already has any non‑master license
     c.execute("SELECT license_key, expires_at, is_trial FROM licenses WHERE telegram_chat_id = ? AND is_master = 0 ORDER BY expires_at DESC LIMIT 1", (telegram_chat_id,))
     row = c.fetchone()
     now = datetime.now()
@@ -141,7 +138,6 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
                     new_expiry = (now + timedelta(days=expires_days)).isoformat()
             else:
                 new_expiry = None
-        # If converting trial to paid, set is_trial=0
         if is_trial == False and old_is_trial == 1:
             c.execute("UPDATE licenses SET expires_at = ?, is_trial = 0 WHERE license_key = ?", (new_expiry, license_key))
         else:
@@ -268,11 +264,11 @@ def export_csv():
 def get_user_settings(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
+    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used, auto_report_enabled, report_hour, report_frequency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
     row = c.fetchone()
     conn.close()
     if row:
-        start, currency, deposits_json, pip_value, pip_currency, hard_stop_hit, trial_used = row
+        start, currency, deposits_json, pip_value, pip_currency, hard_stop_hit, trial_used, auto_report, hour, freq = row
         deposits = json.loads(deposits_json) if deposits_json else []
         total_deposits = sum(deposits) if deposits else 0
         effective_start = start + total_deposits if start else 0
@@ -284,7 +280,10 @@ def get_user_settings(chat_id):
             "pip_value": pip_value,
             "pip_currency": pip_currency,
             "hard_stop_hit": bool(hard_stop_hit),
-            "trial_used": bool(trial_used)
+            "trial_used": bool(trial_used),
+            "auto_report_enabled": bool(auto_report),
+            "report_hour": hour,
+            "report_frequency": freq
         }
     return {
         "starting_balance": None,
@@ -294,31 +293,29 @@ def get_user_settings(chat_id):
         "pip_value": None,
         "pip_currency": None,
         "hard_stop_hit": False,
-        "trial_used": False
+        "trial_used": False,
+        "auto_report_enabled": False,
+        "report_hour": 20,
+        "report_frequency": "daily"
     }
 
-def set_user_settings(chat_id, starting_balance=None, base_currency=None, pip_value=None, pip_currency=None, hard_stop_hit=None, trial_used=None):
+def set_user_settings(chat_id, **kwargs):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
-    row = c.fetchone()
-    if row:
-        start = starting_balance if starting_balance is not None else row[0]
-        curr = base_currency if base_currency is not None else row[1]
-        deposits_json = row[2] if row[2] else "[]"
-        pip_val = pip_value if pip_value is not None else row[3]
-        pip_curr = pip_currency if pip_currency is not None else row[4]
-        hard_stop = hard_stop_hit if hard_stop_hit is not None else row[5]
-        trial = trial_used if trial_used is not None else row[6]
-        c.execute("UPDATE user_settings SET starting_balance = ?, base_currency = ?, pip_value = ?, currency = ?, hard_stop_hit = ?, trial_used = ? WHERE telegram_chat_id = ?",
-                  (start, curr, pip_val, pip_curr, hard_stop, trial, str(chat_id)))
+    c.execute("SELECT * FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
+    exists = c.fetchone()
+    if exists:
+        updates = []
+        params = []
+        for key, value in kwargs.items():
+            updates.append(f"{key} = ?")
+            params.append(value)
+        params.append(str(chat_id))
+        c.execute(f"UPDATE user_settings SET {', '.join(updates)} WHERE telegram_chat_id = ?", params)
     else:
-        start = starting_balance if starting_balance is not None else 0
-        curr = base_currency if base_currency is not None else "USD"
-        hard_stop = 1 if hard_stop_hit else 0
-        trial = 1 if trial_used else 0
-        c.execute("INSERT INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                  (str(chat_id), start, curr, "[]", pip_value, pip_currency, hard_stop, trial))
+        # Insert with defaults
+        cmd = "INSERT INTO user_settings (telegram_chat_id, starting_balance, base_currency, deposits, pip_value, currency, hard_stop_hit, trial_used, auto_report_enabled, report_hour, report_frequency) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        c.execute(cmd, (str(chat_id), kwargs.get('starting_balance', 0), kwargs.get('base_currency', 'USD'), '[]', kwargs.get('pip_value'), kwargs.get('pip_currency'), kwargs.get('hard_stop_hit', 0), kwargs.get('trial_used', 0), kwargs.get('auto_report_enabled', 0), kwargs.get('report_hour', 20), kwargs.get('report_frequency', 'daily')))
     conn.commit()
     conn.close()
 
@@ -337,10 +334,10 @@ def add_deposit(chat_id, amount):
     conn.close()
 
 def set_hard_stop(chat_id, hard_stop_hit):
-    set_user_settings(chat_id, hard_stop_hit=hard_stop_hit)
+    set_user_settings(chat_id, hard_stop_hit=1 if hard_stop_hit else 0)
 
 def mark_trial_used(chat_id):
-    set_user_settings(chat_id, trial_used=True)
+    set_user_settings(chat_id, trial_used=1)
 
 # ==================== CALIBRATION & HARD STOP ENDPOINTS ====================
 @app.route("/calibrate_pip", methods=["POST"])
@@ -394,7 +391,6 @@ def calibrate_pip():
 
 @app.route("/hard_stop", methods=["POST"])
 def report_hard_stop():
-    """Receiver EA calls this when hard stop is hit"""
     if not request.is_json:
         return jsonify({"error": "JSON required"}), 400
     data = request.get_json()
@@ -505,7 +501,6 @@ def handle_admin_report(chat_id, lang):
 
 # ==================== TELEGRAM BOT ====================
 def get_main_menu_markup(chat_id, lang):
-    """Conditional menu: show trial button only if user has no license and hasn't used trial before."""
     settings = get_user_settings(chat_id)
     has_license = False
     conn = sqlite3.connect(DB_PATH)
@@ -578,32 +573,22 @@ def telegram_webhook():
             handle_resume(chat_id, lang)
         elif text == "/adminreport":
             handle_admin_report(chat_id, lang)
-        elif text.startswith("/setbalance"):
+        elif text == "/settings":
+            show_settings_menu(chat_id, lang)
+        elif text.startswith("/sethour"):
             parts = text.split()
-            if len(parts) >= 2:
+            if len(parts) == 2:
                 try:
-                    balance = float(parts[1])
-                    currency = parts[2] if len(parts) >= 3 else "USD"
-                    set_user_settings(chat_id, starting_balance=balance, base_currency=currency.upper())
-                    send_telegram(chat_id, MESSAGES["setbalance_success"][lang].format(balance=balance, currency=currency.upper()))
+                    hour = int(parts[1])
+                    if 0 <= hour <= 23:
+                        set_user_settings(chat_id, report_hour=hour)
+                        send_telegram(chat_id, MESSAGES["set_hour_success"][lang].format(hour=hour))
+                    else:
+                        send_telegram(chat_id, MESSAGES["set_hour_invalid"][lang])
                 except:
-                    send_telegram(chat_id, MESSAGES["setbalance_invalid"][lang])
+                    send_telegram(chat_id, MESSAGES["set_hour_invalid"][lang])
             else:
-                send_telegram(chat_id, MESSAGES["setbalance_invalid"][lang])
-        elif text.startswith("/deposit"):
-            parts = text.split()
-            if len(parts) >= 2:
-                try:
-                    amount = float(parts[1])
-                    add_deposit(chat_id, amount)
-                    settings = get_user_settings(chat_id)
-                    effective = settings["effective_start"]
-                    currency = settings["base_currency"]
-                    send_telegram(chat_id, MESSAGES["deposit_success"][lang].format(amount=amount, currency=currency, new_balance=effective))
-                except:
-                    send_telegram(chat_id, MESSAGES["deposit_invalid"][lang])
-            else:
-                send_telegram(chat_id, MESSAGES["deposit_invalid"][lang])
+                send_telegram(chat_id, MESSAGES["set_hour_prompt"][lang])
         else:
             send_telegram(chat_id, MESSAGES["main_menu"][lang], reply_markup=get_main_menu_markup(chat_id, lang))
     elif "callback_query" in update:
@@ -624,21 +609,47 @@ def telegram_webhook():
         elif data.startswith("report_"):
             period = data.replace("report_", "")
             handle_report(chat_id, period, lang)
+        elif data == "settings_auto_toggle":
+            toggle_auto_report(chat_id, lang)
+        elif data == "settings_freq_daily":
+            set_user_settings(chat_id, report_frequency='daily')
+            show_settings_menu(chat_id, lang)
+        elif data == "settings_freq_weekly":
+            set_user_settings(chat_id, report_frequency='weekly')
+            show_settings_menu(chat_id, lang)
+        elif data == "settings_freq_monthly":
+            set_user_settings(chat_id, report_frequency='monthly')
+            show_settings_menu(chat_id, lang)
+        elif data == "settings_hour":
+            send_telegram(chat_id, MESSAGES["set_hour_prompt"][lang])
         else:
             send_telegram(chat_id, MESSAGES["invalid_option"][lang])
         answer_callback(query["id"])
     return "OK", 200
 
-def show_report_menu(chat_id, lang):
+def show_settings_menu(chat_id, lang):
+    settings = get_user_settings(chat_id)
+    auto_status = "ON" if settings["auto_report_enabled"] else "OFF"
+    freq = settings["report_frequency"]
+    hour = settings["report_hour"]
     reply_markup = {
         "inline_keyboard": [
-            [{"text": MESSAGES["report_daily_btn"][lang], "callback_data": "report_daily"}],
-            [{"text": MESSAGES["report_weekly_btn"][lang], "callback_data": "report_weekly"}],
-            [{"text": MESSAGES["report_monthly_btn"][lang], "callback_data": "report_monthly"}],
-            [{"text": MESSAGES["report_alltime_btn"][lang], "callback_data": "report_alltime"}]
+            [{"text": MESSAGES["auto_report_on"][lang] if settings["auto_report_enabled"] else MESSAGES["auto_report_off"][lang], "callback_data": "settings_auto_toggle"}],
+            [{"text": MESSAGES["report_frequency"][lang].format(freq=freq.capitalize()), "callback_data": "settings_freq_daily"}, {"text": MESSAGES["report_frequency"][lang].format(freq="Weekly"), "callback_data": "settings_freq_weekly"}, {"text": MESSAGES["report_frequency"][lang].format(freq="Monthly"), "callback_data": "settings_freq_monthly"}],
+            [{"text": MESSAGES["report_hour"][lang].format(hour=hour), "callback_data": "settings_hour"}]
         ]
     }
-    send_telegram(chat_id, MESSAGES["report_menu_title"][lang], reply_markup)
+    send_telegram(chat_id, MESSAGES["settings_title"][lang], reply_markup)
+
+def toggle_auto_report(chat_id, lang):
+    settings = get_user_settings(chat_id)
+    new_state = not settings["auto_report_enabled"]
+    set_user_settings(chat_id, auto_report_enabled=1 if new_state else 0)
+    if new_state:
+        send_telegram(chat_id, MESSAGES["auto_report_notify_on"][lang].format(hour=settings["report_hour"]))
+    else:
+        send_telegram(chat_id, MESSAGES["auto_report_notify_off"][lang])
+    show_settings_menu(chat_id, lang)
 
 def check_license_status(chat_id, lang):
     conn = sqlite3.connect(DB_PATH)
@@ -683,7 +694,6 @@ def unbind_license(chat_id, lang):
     notify_admin(admin_msg)
 
 def handle_trial(chat_id, lang):
-    # Check if already has license
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
@@ -692,7 +702,6 @@ def handle_trial(chat_id, lang):
         send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
         return
     conn.close()
-    # Check if trial already used (via user_settings)
     settings = get_user_settings(chat_id)
     if settings["trial_used"]:
         send_telegram(chat_id, MESSAGES["trial_not_available"][lang])
@@ -706,7 +715,6 @@ def handle_trial(chat_id, lang):
     notify_admin(f"🧪 New trial license\nUser: {chat_id}\nKey: {license_key}\nExpires: {expiry_str}")
 
 def handle_resume(chat_id, lang):
-    # Check if user has a license
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
@@ -721,6 +729,17 @@ def handle_resume(chat_id, lang):
         return
     set_hard_stop(chat_id, False)
     send_telegram(chat_id, MESSAGES["resume_success"][lang])
+
+def show_report_menu(chat_id, lang):
+    reply_markup = {
+        "inline_keyboard": [
+            [{"text": MESSAGES["report_daily_btn"][lang], "callback_data": "report_daily"}],
+            [{"text": MESSAGES["report_weekly_btn"][lang], "callback_data": "report_weekly"}],
+            [{"text": MESSAGES["report_monthly_btn"][lang], "callback_data": "report_monthly"}],
+            [{"text": MESSAGES["report_alltime_btn"][lang], "callback_data": "report_alltime"}]
+        ]
+    }
+    send_telegram(chat_id, MESSAGES["report_menu_title"][lang], reply_markup)
 
 def create_payment_invoice(chat_id, plan_id, lang):
     if plan_id not in PLANS:
@@ -846,7 +865,6 @@ def validate_license():
     if not valid:
         return jsonify({"allowed": False, "message": "Invalid or expired license, or wrong MT5 account (use Unbind button on Telegram to reset)"}), 200
 
-    # Get hard stop status for this license
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT telegram_chat_id FROM licenses WHERE license_key = ?", (license_key,))
@@ -924,6 +942,10 @@ def admin_activate_license():
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "alive"})
+
+# ==================== START SCHEDULER ====================
+from scheduler import start_scheduler
+scheduler = start_scheduler()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
