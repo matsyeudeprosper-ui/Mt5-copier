@@ -2,7 +2,7 @@ import os
 import threading
 import time
 import logging
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import requests
 import db
 from trade_endpoints import trade_bp
@@ -30,19 +30,20 @@ set_bot_token(TELEGRAM_BOT_TOKEN)
 app.register_blueprint(trade_bp)
 app.register_blueprint(bot_bp)
 
-# Keep-alive thread
+# Keep-alive thread (every 60 seconds)
 def keep_alive():
     while True:
-        time.sleep(240)
+        time.sleep(60)
         try:
-            requests.get(f"http://localhost:{os.environ.get('PORT', 5000)}/health", timeout=10)
+            url = f"http://localhost:{os.environ.get('PORT', 5000)}/health"
+            requests.get(url, timeout=5)
             logger.info("Keep-alive ping sent")
         except Exception as e:
             logger.error(f"Keep-alive ping failed: {e}")
 
 if not app.debug:
     threading.Thread(target=keep_alive, daemon=True).start()
-    logger.info("Keep-alive thread started")
+    logger.info("Keep-alive thread started (every 60 seconds)")
 
 # Start scheduler
 scheduler = start_scheduler()
@@ -54,19 +55,20 @@ def health():
 
 @app.route("/buy", methods=["GET"])
 def payment_page():
-    return "<h1>Use Telegram bot to purchase</h1>"
+    # Use the existing buy.html template
+    return render_template("buy.html")
 
 @app.route("/payment_success", methods=["GET"])
 def payment_success():
-    return "<h1>Payment successful! Your license key will be sent via Telegram.</h1>"
+    return render_template("success.html")
 
 @app.route("/payment_cancel", methods=["GET"])
 def payment_cancel():
-    return "<h1>Payment cancelled. No license issued.</h1>"
+    return render_template("cancel.html")
 
 @app.route("/test", methods=["GET"])
 def test_dashboard():
-    return "<h1>Test dashboard available</h1><p>Add templates/test.html</p>"
+    return render_template("test.html")
 
 @app.route("/licenses", methods=["GET"])
 def list_licenses():

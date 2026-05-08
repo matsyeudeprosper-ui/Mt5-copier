@@ -189,19 +189,19 @@ def toggle_auto_report(chat_id, lang):
 
 def handle_report(chat_id, period, lang):
     from trade_endpoints import is_license_valid
-    # Check if user has a license (quick check)
+    # Check if user has a license
     conn = db.get_conn()
     c = conn.cursor()
     c.execute("SELECT license_key FROM licenses WHERE telegram_chat_id = ? AND is_master = 0", (str(chat_id),))
     if not c.fetchone():
         conn.close()
-        send_telegram(chat_id, "You don't have an active license.")
+        send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
     conn.close()
     # Use reporting module
     purchase_date = reporting.get_license_purchase_date(str(chat_id))
     if not purchase_date:
-        send_telegram(chat_id, "You don't have an active license.")
+        send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
     trades = reporting.get_trades_from_date(purchase_date)
     now = datetime.now()
@@ -224,9 +224,12 @@ def handle_report(chat_id, period, lang):
     pip_value = settings["pip_value"]
     pip_currency = settings["pip_currency"] or "USD"
     stats = reporting.calculate_stats(trades, pip_value=pip_value)
+    if not stats:
+        send_telegram(chat_id, MESSAGES["report_no_trades"][lang])
+        return
+
     start_balance = settings["effective_start"] if settings["effective_start"] > 0 else None
 
-    # Format report same as before
     msg = MESSAGES[f"report_{period}"][lang] + "\n\n"
     if pip_value is not None:
         net_profit_str = f"{stats['net_profit']:.2f} {pip_currency}"
@@ -337,7 +340,7 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
         conn.close()
         return license_key, new_expiry
     else:
-        license_key = db.generate_license_key()
+        license_key = secrets.token_hex(16).upper()
         activated_at = now.isoformat()
         expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
         c.execute('''INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active, is_trial)
@@ -345,11 +348,6 @@ def activate_license(telegram_chat_id, expires_days, is_trial=False):
         conn.commit()
         conn.close()
         return license_key, expires_at
-
-# Clean up circular dependency: db.generate_license_key
-def generate_license_key():
-    return secrets.token_hex(16).upper()
-db.generate_license_key = generate_license_key
 
 # ========== Telegram webhook endpoint ==========
 @bot_bp.route("/webhook/telegram", methods=["POST"])
