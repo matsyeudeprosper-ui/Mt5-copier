@@ -6,15 +6,27 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 DB_PATH = "/tmp/trades.db"
-
-# We need to import reporting and a few helper functions from app.
-# To avoid circular imports, we define a small helper to send messages.
-# The actual send_telegram function is imported from app, but we can't import app directly.
-# We'll define a function that calls the app's send_telegram via a shared module.
-# For simplicity, we'll move the reporting logic into a separate file and call it.
-# But to keep changes minimal, I'll replicate the necessary parts.
+logger = logging.getLogger(__name__)
 
 import reporting
+from notifications import send_expiry_reminder
+
+def send_expiry_reminders():
+    """Send Telegram reminders to users whose license expires in 3 days."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now()
+    reminder_date = now + timedelta(days=3)
+    c.execute("SELECT license_key, telegram_chat_id, expires_at FROM licenses WHERE expires_at IS NOT NULL AND is_master = 0 AND is_active = 1")
+    rows = c.fetchall()
+    conn.close()
+    for license_key, chat_id, expires_at_str in rows:
+        if not chat_id:
+            continue
+        expires_at = datetime.fromisoformat(expires_at_str)
+        if expires_at <= reminder_date and expires_at > now:
+            days_left = (expires_at - now).days
+            send_expiry_reminder(chat_id, license_key, expires_at_str, days_left)
 
 def get_users_for_report():
     conn = sqlite3.connect(DB_PATH)
@@ -25,8 +37,6 @@ def get_users_for_report():
     return rows
 
 def send_report_to_user(chat_id, period, lang='en'):
-    """Send a report for the given period to a specific user."""
-    # Get purchase date
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT activated_at FROM licenses WHERE telegram_chat_id = ? AND is_master = 0 ORDER BY activated_at ASC LIMIT 1", (str(chat_id),))
@@ -48,7 +58,6 @@ def send_report_to_user(chat_id, period, lang='en'):
     else:
         return
 
-    # Get user settings (pip value, starting balance, etc.)
     c.execute("SELECT starting_balance, base_currency, deposits, pip_value, currency FROM user_settings WHERE telegram_chat_id = ?", (str(chat_id),))
     row2 = c.fetchone()
     conn.close()
@@ -67,7 +76,6 @@ def send_report_to_user(chat_id, period, lang='en'):
         pip_value = pv
         pip_currency = pc
 
-    # Load messages
     with open("config.json", "r", encoding="utf-8") as f:
         CONFIG = json.load(f)
     MESSAGES = CONFIG["messages"]
@@ -75,7 +83,6 @@ def send_report_to_user(chat_id, period, lang='en'):
     stats = reporting.calculate_stats(trades, pip_value=pip_value)
     if not stats:
         return
-    # Format report text
     if pip_value is not None:
         net_profit_str = f"{stats['net_profit']:.2f} {pip_currency}"
         avg_win_str = f"{stats['avg_win']:.2f} {pip_currency}"
@@ -112,23 +119,16 @@ def send_report_to_user(chat_id, period, lang='en'):
             currency=currency_symbol
         )
 
-    # Now send the message via Telegram (requires bot token)
-    # We'll import send_telegram from app (will be defined in app.py)
-    # To avoid circular import, we'll assume a function is passed or we define a global.
-    # For simplicity, we'll import app inside this function.
     try:
-        from app import send_telegram
+        from telegram_bot import send_telegram
         send_telegram(chat_id, msg)
     except ImportError:
         logging.error("Could not import send_telegram from app")
 
 def check_and_send_reports():
-    """Called every hour. For each user, if current hour matches their report_hour,
-    and if period conditions are met, send the appropriate report."""
     users = get_users_for_report()
     now = datetime.now()
     current_hour = now.hour
-    # Determine if today is Monday (for weekly) or first day of month (for monthly)
     is_monday = now.weekday() == 0
     is_first_of_month = now.day == 1
 
@@ -144,8 +144,8 @@ def check_and_send_reports():
 
 def start_scheduler():
     scheduler = BackgroundScheduler()
-    # Run every hour at minute 0
     scheduler.add_job(func=check_and_send_reports, trigger=CronTrigger(minute=0, hour='*'), id='hourly_report_check')
+    scheduler.add_job(func=send_expiry_reminders, trigger=CronTrigger(hour=10, minute=0), id='expiry_reminder')
     scheduler.start()
-    logging.info("Scheduler started")
+    logging.info("Scheduler started (report check + expiry reminders)")
     return scheduler

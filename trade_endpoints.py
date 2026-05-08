@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 import db
 from config import MESSAGES
+from notifications import send_validation_failure_notification
 
 trade_bp = Blueprint('trade', __name__)
 logger = logging.getLogger(__name__)
@@ -103,7 +104,14 @@ def validate_license():
     if not mt5_account:
         return jsonify({"allowed": False, "message": "MT5 account missing"}), 200
 
-    if not is_license_valid(license_key, require_master=False, mt5_account=mt5_account):
+    valid = is_license_valid(license_key, require_master=False, mt5_account=mt5_account)
+    if not valid:
+        lic = db.get_license_by_key(license_key)
+        if lic:
+            if lic["expires_at"] and datetime.now() > datetime.fromisoformat(lic["expires_at"]):
+                send_validation_failure_notification(license_key, "expired")
+            else:
+                send_validation_failure_notification(license_key, "wrong_account")
         return jsonify({"allowed": False, "message": "Invalid or expired license, or wrong MT5 account (use Unbind button on Telegram to reset)"}), 200
 
     lic = db.get_license_by_key(license_key)
@@ -152,7 +160,6 @@ def calibrate_pip():
         return jsonify({"error": "Invalid pip value"}), 400
 
     db.set_pip_calibration(chat_id, pip_value, currency)
-    # Send Telegram notification
     from telegram_bot import send_telegram
     send_telegram(chat_id, MESSAGES["calibration_success"]["en"].format(currency=currency, pip_value=pip_value))
     return jsonify({"success": True, "pip_value": pip_value, "currency": currency}), 200

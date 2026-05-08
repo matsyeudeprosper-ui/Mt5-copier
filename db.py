@@ -18,7 +18,7 @@ def init_db():
         action TEXT, magic TEXT, ticket TEXT, symbol TEXT, type TEXT,
         volume REAL, open_price REAL, sl REAL, tp REAL, close_profit REAL,
         comment TEXT, timestamp TEXT, received_at TEXT)''')
-    # New messages table for sequence‑based event log
+    # New messages table
     c.execute('''CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seq INTEGER UNIQUE,
@@ -38,7 +38,10 @@ def init_db():
         expires_at TEXT,
         is_master INTEGER DEFAULT 0,
         is_active INTEGER DEFAULT 1,
-        is_trial INTEGER DEFAULT 0)''')
+        is_trial INTEGER DEFAULT 0,
+        last_expiry_reminder TEXT,
+        last_failure_notification TEXT
+    )''')
     c.execute('''CREATE TABLE IF NOT EXISTS license_activations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         license_key TEXT,
@@ -66,22 +69,30 @@ def init_db():
         report_frequency TEXT DEFAULT 'daily'
     )''')
 
-    # --- Migrations: add missing columns to user_settings ---
-    c.execute("PRAGMA table_info(user_settings)")
+    # Add missing columns for existing databases (if any)
+    c.execute("PRAGMA table_info(licenses)")
     existing_cols = [col[1] for col in c.fetchall()]
-    if "hard_stop_hit" not in existing_cols:
+    if "last_expiry_reminder" not in existing_cols:
+        c.execute("ALTER TABLE licenses ADD COLUMN last_expiry_reminder TEXT")
+    if "last_failure_notification" not in existing_cols:
+        c.execute("ALTER TABLE licenses ADD COLUMN last_failure_notification TEXT")
+
+    # Rest of migrations...
+    c.execute("PRAGMA table_info(user_settings)")
+    existing_user_cols = [col[1] for col in c.fetchall()]
+    if "hard_stop_hit" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN hard_stop_hit INTEGER DEFAULT 0")
-    if "trial_used" not in existing_cols:
+    if "trial_used" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN trial_used INTEGER DEFAULT 0")
-    if "auto_report_enabled" not in existing_cols:
+    if "auto_report_enabled" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN auto_report_enabled INTEGER DEFAULT 0")
-    if "report_hour" not in existing_cols:
+    if "report_hour" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN report_hour INTEGER DEFAULT 20")
-    if "report_frequency" not in existing_cols:
+    if "report_frequency" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN report_frequency TEXT DEFAULT 'daily'")
-    if "pip_value" not in existing_cols:
+    if "pip_value" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN pip_value REAL")
-    if "currency" not in existing_cols:
+    if "currency" not in existing_user_cols:
         c.execute("ALTER TABLE user_settings ADD COLUMN currency TEXT")
 
     conn.commit()
@@ -271,5 +282,20 @@ def sync_master_key(MASTER_KEY):
     else:
         c.execute("INSERT INTO licenses (license_key, telegram_chat_id, bound_account, activated_at, expires_at, is_master, is_active, is_trial) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                   (MASTER_KEY, "master", None, datetime.now().isoformat(), None, 1, 1, 0))
+    conn.commit()
+    conn.close()
+
+# New functions for cooldown tracking
+def update_last_expiry_reminder(license_key):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE licenses SET last_expiry_reminder = ? WHERE license_key = ?", (datetime.now().isoformat(), license_key))
+    conn.commit()
+    conn.close()
+
+def update_last_failure_notification(license_key):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE licenses SET last_failure_notification = ? WHERE license_key = ?", (datetime.now().isoformat(), license_key))
     conn.commit()
     conn.close()
