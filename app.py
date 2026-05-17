@@ -3,7 +3,7 @@ import threading
 import time
 import logging
 import json
-import hashlib
+import traceback
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template
 import requests
@@ -68,7 +68,6 @@ DEFAULT_CONFIG = {
 }
 
 def load_licenses():
-    """Load licenses from Supabase, fallback to JSON backup."""
     if supabase:
         try:
             result = supabase.table('licenses').select('*').execute()
@@ -89,7 +88,6 @@ def load_licenses():
         return {}
 
 def save_licenses(licenses_dict):
-    """Save licenses to Supabase (upsert) and JSON backup."""
     try:
         with open(LICENSES_JSON_BACKUP, "w") as f:
             json.dump(licenses_dict, f, indent=2)
@@ -159,7 +157,6 @@ def validate_license():
             if not lic:
                 return jsonify({"valid": False, "reason": "License not found"}), 200
 
-        # Check expiry
         expires_at = lic.get('expires_at')
         if expires_at:
             try:
@@ -169,12 +166,10 @@ def validate_license():
             except:
                 pass
 
-        # Check bound account
         bound_account = lic.get('bound_account')
         if bound_account is not None and bound_account != account:
             return jsonify({"valid": False, "reason": "Account not bound"}), 200
 
-        # Check is_active
         if not lic.get('is_active', True):
             return jsonify({"valid": False, "reason": "License inactive"}), 200
 
@@ -263,7 +258,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- PAIRING DECISION ENDPOINT with idempotency and expiry ----------
+# ---------- PAIRING DECISION ENDPOINT with idempotency and safe parsing ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()
@@ -285,17 +280,23 @@ def pairing_decision():
     basket_hash = data.get("basket_hash", "")
 
     try:
-        # Build config and state from request
-        config = PairingConfig(**data.get("config", {}))
-        state = PairingEngineState(**data.get("state", {}))
+        # Safe unpacking for config and state
+        from models import PairingConfig, PairingEngineState, PositionInfo
+        cfg = data.get("config", {})
+        config = PairingConfig(**{k: cfg.get(k) for k in PairingConfig.__dataclass_fields__.keys()})
+        st = data.get("state", {})
+        state = PairingEngineState(**{k: st.get(k) for k in PairingEngineState.__dataclass_fields__.keys()})
 
-        # Build positions list
+        # Build positions list with tolerant is_buy field
         positions = []
         for p in data.get("positions", []):
-            from pairing_engine import PositionInfo
+            is_buy = p.get("is_buy", p.get("isBuy", False))
             positions.append(PositionInfo(
-                ticket=p["ticket"], profit=p["profit"],
-                volume=p["volume"], entry=p["entry"], is_buy=p["is_buy"]
+                ticket=p["ticket"],
+                profit=p["profit"],
+                volume=p["volume"],
+                entry=p["entry"],
+                is_buy=is_buy
             ))
 
         symbol_info = data.get("symbol_info", {})
@@ -333,7 +334,7 @@ def pairing_decision():
 
         return jsonify(response), 200
     except Exception as e:
-        logger.error(f"Pairing decision error: {e}")
+        logger.error(f"Pairing decision error: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
 
 # ---------- ADMIN ENDPOINTS ----------

@@ -8,7 +8,7 @@ class PositionInfo:
     profit: float
     volume: float
     entry: float
-    is_buy: bool
+    is_buy: bool   # note: uses snake_case
 
 @dataclass
 class Candidate:
