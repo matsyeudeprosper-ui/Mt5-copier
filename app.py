@@ -10,6 +10,7 @@ import db
 from trade_endpoints import trade_bp
 from telegram_bot import bot_bp, set_bot_token
 from scheduler import start_scheduler
+from risk_engine import calculate_dynamic_lot_size, can_add_position   # new
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -32,7 +33,7 @@ set_bot_token(TELEGRAM_BOT_TOKEN)
 app.register_blueprint(trade_bp)
 app.register_blueprint(bot_bp)
 
-# ---------- NEW: JSON file storage for licenses, config, heartbeats ----------
+# ---------- JSON file storage for licenses, config, heartbeats ----------
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 LICENSES_FILE = os.path.join(DATA_DIR, "licenses.json")
@@ -54,7 +55,6 @@ DEFAULT_CONFIG = {
 def load_licenses():
     """Load licenses from JSON file. Returns dict: license_key -> license_data"""
     if not os.path.exists(LICENSES_FILE):
-        # Create empty licenses file
         with open(LICENSES_FILE, "w") as f:
             json.dump({}, f)
         return {}
@@ -80,7 +80,6 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
             saved = json.load(f)
-        # Merge with defaults (in case new keys added later)
         config = DEFAULT_CONFIG.copy()
         config.update(saved)
         return config
@@ -104,13 +103,9 @@ def log_heartbeat(data):
     except Exception as e:
         logger.error(f"Failed to log heartbeat: {e}")
 
-# ---------- NEW ENDPOINTS FOR EA ----------
+# ---------- ENDPOINTS FOR EA ----------
 @app.route("/validate-license", methods=["POST"])
 def validate_license():
-    """
-    Expects JSON: { "license": "ABC123", "account": 123456, "broker": "ICMarkets" }
-    Returns: { "valid": bool, "expires": "YYYY-MM-DD", "min_version": "1.0.5" }
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON body"}), 400
@@ -142,10 +137,6 @@ def validate_license():
     if bound_account is not None and bound_account != account:
         return jsonify({"valid": False, "reason": "Account not bound"}), 200
 
-    # Optional: check broker?
-    # (we can skip for now)
-
-    # License is valid
     return jsonify({
         "valid": True,
         "expires": lic.get("expires_at", "2099-12-31"),
@@ -154,9 +145,7 @@ def validate_license():
 
 @app.route("/get-config", methods=["GET"])
 def get_config():
-    """Return current risk parameters (no auth needed, public for all EAs)"""
     config = load_config()
-    # Map to EA's expected variable names (snake_case to match EA's internal naming)
     response = {
         "participation_percent": config.get("participation_percent", 5.0),
         "mor_safety_multiplier": config.get("mor_safety_multiplier", 1.15),
@@ -171,20 +160,69 @@ def get_config():
 
 @app.route("/heartbeat", methods=["POST"])
 def heartbeat():
-    """EA sends telemetry: { equity, floating_dd, positions, version, ... }"""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing data"}), 400
-
-    # Add server timestamp
     data["server_time"] = datetime.now().isoformat()
     log_heartbeat(data)
     return jsonify({"status": "ok"}), 200
 
+# ---------- NEW ENDPOINTS FOR RISK ENGINE (SECRET FORMULAS) ----------
+@app.route("/calculate-lot", methods=["POST"])
+def calculate_lot():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON"}), 400
+
+    required = ["equity", "protected_floor", "initial_account_equity", "direction",
+                "first_entry_price", "free_margin", "max_expected_move_percent",
+                "max_grid_levels", "max_recovery_additions", "min_operational_additions",
+                "min_entry_spacing_percent", "mor_safety_multiplier",
+                "growth_participation_percent", "grid_levels", "tick_value",
+                "tick_size", "min_lot", "max_lot", "lot_step", "symbol"]
+    for field in required:
+        if field not in data:
+            return jsonify({"error": f"Missing {field}"}), 400
+
+    try:
+        lot = calculate_dynamic_lot_size(
+            equity=data["equity"],
+            protected_floor=data["protected_floor"],
+            initial_account_equity=data["initial_account_equity"],
+            direction=data["direction"],
+            first_entry_price=data["first_entry_price"],
+            free_margin=data["free_margin"],
+            max_expected_move_percent=data["max_expected_move_percent"],
+            max_grid_levels=data["max_grid_levels"],
+            max_recovery_additions=data["max_recovery_additions"],
+            min_operational_additions=data["min_operational_additions"],
+            min_entry_spacing_percent=data["min_entry_spacing_percent"],
+            mor_safety_multiplier=data["mor_safety_multiplier"],
+            growth_participation_percent=data["growth_participation_percent"],
+            grid_levels=data["grid_levels"],
+            tick_value=data["tick_value"],
+            tick_size=data["tick_size"],
+            min_lot=data["min_lot"],
+            max_lot=data["max_lot"],
+            lot_step=data["lot_step"],
+            symbol=data["symbol"]
+        )
+        return jsonify({"lot": lot, "allowed": lot > 0}), 200
+    except Exception as e:
+        logger.error(f"Lot calculation error: {e}")
+        return jsonify({"error": "Internal server error", "lot": -1}), 500
+
+@app.route("/can-add-position", methods=["POST"])
+def can_add():
+    data = request.get_json()
+    projected = data.get("projected_loss", 0)
+    allowed = data.get("allowed_loss", 0)
+    allowed_bool = can_add_position(projected, allowed)
+    return jsonify({"allowed": allowed_bool}), 200
+
 # ---------- ADMIN ENDPOINTS (protected by X-Admin-Token) ----------
 @app.route("/admin/set-config", methods=["POST"])
 def admin_set_config():
-    """Update configuration. Expect JSON with new values. Header: X-Admin-Token: ADMIN_SECRET"""
     if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -193,7 +231,6 @@ def admin_set_config():
         return jsonify({"error": "Missing config"}), 400
 
     current = load_config()
-    # Update only provided keys (allow partial updates)
     for key, value in new_config.items():
         if key in DEFAULT_CONFIG:
             current[key] = value
@@ -205,9 +242,6 @@ def admin_set_config():
 
 @app.route("/admin/create-license", methods=["POST"])
 def admin_create_license():
-    """Create a new license. Header: X-Admin-Token: ADMIN_SECRET
-       Body: { "license_key": "ABC123", "bound_account": 123456 (optional), "expires_at": "2026-12-31", "min_version": "1.0.0" }
-    """
     if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -236,9 +270,6 @@ def admin_create_license():
 
 @app.route("/admin/disable-license", methods=["POST"])
 def admin_disable_license():
-    """Disable a license (soft delete). Header: X-Admin-Token: ADMIN_SECRET
-       Body: { "license_key": "ABC123" }
-    """
     if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
@@ -251,14 +282,19 @@ def admin_disable_license():
     if license_key not in licenses:
         return jsonify({"error": "License not found"}), 404
 
-    # Instead of deleting, we mark as inactive (optional)
     licenses[license_key]["is_active"] = False
-    # Also set expiry to now if you want immediate block
     licenses[license_key]["expires_at"] = datetime.now().isoformat()
     save_licenses(licenses)
     return jsonify({"status": "disabled"}), 200
 
-# Keep-alive thread (same as before)
+@app.route("/licenses", methods=["GET"])
+def list_licenses():
+    if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    licenses = load_licenses()
+    return jsonify(licenses), 200
+
+# ---------- KEEP-ALIVE THREAD ----------
 def keep_alive():
     while True:
         time.sleep(60)
@@ -273,10 +309,10 @@ if not app.debug:
     threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("Keep-alive thread started (every 60 seconds)")
 
-# Start scheduler (existing)
+# Start scheduler
 scheduler = start_scheduler()
 
-# Existing endpoints (health, buy, payment, etc.)
+# ---------- EXISTING ENDPOINTS (health, buy, payment, test) ----------
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "alive"}
@@ -296,13 +332,6 @@ def payment_cancel():
 @app.route("/test", methods=["GET"])
 def test_dashboard():
     return render_template("test.html")
-
-@app.route("/licenses", methods=["GET"])
-def list_licenses():
-    if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
-        return jsonify({"error": "Unauthorized"}), 401
-    licenses = load_licenses()
-    return jsonify(licenses), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
