@@ -3,6 +3,7 @@ import threading
 import time
 import logging
 import json
+import hashlib
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template
 import requests
@@ -11,6 +12,7 @@ from trade_endpoints import trade_bp
 from telegram_bot import bot_bp, set_bot_token
 from scheduler import start_scheduler
 from risk_engine import calculate_dynamic_lot_size, can_add_position
+from pairing_engine import get_best_pairing_decision, PairingConfig, PairingEngineState
 from supabase import create_client, Client
 
 # Environment variables
@@ -25,15 +27,18 @@ app.secret_key = os.urandom(24)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase client
+# Initialize Supabase client (with graceful fallback)
+supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    logger.info("Supabase client initialized")
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase client initialized")
+    except Exception as e:
+        logger.error(f"Supabase initialization failed: {e}")
 else:
-    supabase = None
-    logger.warning("Supabase credentials missing – license storage will not work")
+    logger.warning("Supabase credentials missing – using JSON fallback")
 
-# Initialize database and sync master key (keep for user settings, orders, etc.)
+# Initialize local database (for user settings, orders, etc.)
 db.init_db()
 db.sync_master_key(MASTER_KEY)
 
@@ -44,14 +49,13 @@ set_bot_token(TELEGRAM_BOT_TOKEN)
 app.register_blueprint(trade_bp)
 app.register_blueprint(bot_bp)
 
-# ---------- JSON fallback for licenses (in case Supabase is unavailable) ----------
+# ---------- JSON file storage for licenses (fallback) and config ----------
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 HEARTBEAT_FILE = os.path.join(DATA_DIR, "heartbeat.log")
 
-# Default configuration (fallback if file missing)
 DEFAULT_CONFIG = {
     "participation_percent": 5.0,
     "mor_safety_multiplier": 1.15,
@@ -64,19 +68,17 @@ DEFAULT_CONFIG = {
 }
 
 def load_licenses():
-    """Load licenses from Supabase, fallback to JSON backup if needed"""
+    """Load licenses from Supabase, fallback to JSON backup."""
     if supabase:
         try:
             result = supabase.table('licenses').select('*').execute()
             if result.data:
-                # Convert list to dict keyed by license_key (for compatibility with old code)
                 licenses_dict = {}
                 for row in result.data:
                     licenses_dict[row['license_key']] = row
                 return licenses_dict
         except Exception as e:
             logger.error(f"Supabase load failed: {e}")
-    # Fallback to JSON
     if not os.path.exists(LICENSES_JSON_BACKUP):
         return {}
     try:
@@ -87,18 +89,15 @@ def load_licenses():
         return {}
 
 def save_licenses(licenses_dict):
-    """Save licenses to Supabase (upsert) and also backup to JSON"""
-    # Backup to JSON
+    """Save licenses to Supabase (upsert) and JSON backup."""
     try:
         with open(LICENSES_JSON_BACKUP, "w") as f:
             json.dump(licenses_dict, f, indent=2)
     except Exception as e:
         logger.error(f"JSON backup save failed: {e}")
-    # Sync to Supabase
     if supabase:
         try:
             for lic in licenses_dict.values():
-                # Upsert: if exists update, else insert
                 supabase.table('licenses').upsert(lic).execute()
         except Exception as e:
             logger.error(f"Supabase upsert failed: {e}")
@@ -129,6 +128,10 @@ def log_heartbeat(data):
             f.write(json.dumps(data) + "\n")
     except Exception as e:
         logger.error(f"Failed to log heartbeat: {e}")
+
+# ---------- Simple idempotency cache for pairing decisions ----------
+processed_requests = {}
+REQUEST_CACHE_TTL_SECONDS = 60
 
 # ---------- ENDPOINTS ----------
 @app.route("/validate-license", methods=["POST"])
@@ -260,6 +263,79 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
+# ---------- PAIRING DECISION ENDPOINT with idempotency and expiry ----------
+@app.route("/pairing-decision", methods=["POST"])
+def pairing_decision():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON"}), 400
+
+    request_id = data.get("request_id")
+    if not request_id:
+        return jsonify({"error": "Missing request_id"}), 400
+
+    # Idempotency: return cached response if already processed (within TTL)
+    if request_id in processed_requests:
+        cached = processed_requests[request_id]
+        if datetime.now() < cached["expires_at"]:
+            return jsonify(cached["response"]), 200
+        else:
+            del processed_requests[request_id]
+
+    basket_hash = data.get("basket_hash", "")
+
+    try:
+        # Build config and state from request
+        config = PairingConfig(**data.get("config", {}))
+        state = PairingEngineState(**data.get("state", {}))
+
+        # Build positions list
+        positions = []
+        for p in data.get("positions", []):
+            from pairing_engine import PositionInfo
+            positions.append(PositionInfo(
+                ticket=p["ticket"], profit=p["profit"],
+                volume=p["volume"], entry=p["entry"], is_buy=p["is_buy"]
+            ))
+
+        symbol_info = data.get("symbol_info", {})
+        direction_locked = data.get("g_direction_locked", False)
+        current_direction_is_buy = data.get("g_current_direction_is_buy", True)
+        current_time = data.get("current_time", int(time.time()))
+        atr_h4 = data.get("atr_h4", 0.001)
+        active_flip_ticket = data.get("active_flip_ticket", None)
+
+        decision = get_best_pairing_decision(
+            positions=positions,
+            direction_locked=direction_locked,
+            current_direction_is_buy=current_direction_is_buy,
+            symbol_info=symbol_info,
+            config=config,
+            state=state,
+            current_time=current_time,
+            atr_h4=atr_h4,
+            active_flip_ticket=active_flip_ticket
+        )
+
+        expires_at = int(time.time()) + 5   # 5 seconds validity
+        response = {
+            "request_id": request_id,
+            "expires_at": expires_at,
+            "basket_hash": basket_hash,
+            "decision": asdict(decision) if decision else None
+        }
+
+        # Cache for idempotency
+        processed_requests[request_id] = {
+            "expires_at": datetime.now() + timedelta(seconds=REQUEST_CACHE_TTL_SECONDS),
+            "response": response
+        }
+
+        return jsonify(response), 200
+    except Exception as e:
+        logger.error(f"Pairing decision error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
 # ---------- ADMIN ENDPOINTS ----------
 @app.route("/admin/set-config", methods=["POST"])
 def admin_set_config():
@@ -310,7 +386,6 @@ def admin_create_license():
 
     try:
         if supabase:
-            # Check if exists
             existing = supabase.table('licenses').select('license_key').eq('license_key', license_key).execute()
             if existing.data:
                 return jsonify({"error": "License already exists"}), 400
@@ -387,7 +462,7 @@ if not app.debug:
     threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("Keep-alive thread started (every 60 seconds)")
 
-# Start scheduler
+# Start scheduler (from existing code)
 scheduler = start_scheduler()
 
 # ---------- EXISTING ENDPOINTS (health, buy, payment, test) ----------
