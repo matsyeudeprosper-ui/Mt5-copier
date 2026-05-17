@@ -8,12 +8,11 @@ from flask import Blueprint, request, jsonify
 import db
 from config import PLANS, MESSAGES
 import reporting
-from supabase import create_client, Client
 
 bot_bp = Blueprint('bot', __name__)
 logger = logging.getLogger(__name__)
 
-# Environment variables (set in Render)
+# Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "")
@@ -21,52 +20,15 @@ NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# Initialize Supabase client
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-else:
-    supabase = None
-    logger.warning("Supabase credentials missing – bot will fallback to JSON")
+# Initialize Supabase client (required, will crash if missing)
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise Exception("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
 
-# JSON backup for licenses (if Supabase unavailable)
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
+from supabase import create_client, Client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+logger.info("Supabase client initialized for bot")
 
-def load_licenses():
-    """Load licenses from Supabase, fallback to JSON backup"""
-    if supabase:
-        try:
-            result = supabase.table('licenses').select('*').execute()
-            if result.data:
-                licenses_dict = {}
-                for row in result.data:
-                    licenses_dict[row['license_key']] = row
-                return licenses_dict
-        except Exception as e:
-            logger.error(f"Supabase load failed: {e}")
-    if not os.path.exists(LICENSES_JSON_BACKUP):
-        return {}
-    try:
-        with open(LICENSES_JSON_BACKUP, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"JSON load failed: {e}")
-        return {}
-
-def save_licenses(licenses_dict):
-    """Save licenses to Supabase (upsert) and JSON backup"""
-    try:
-        with open(LICENSES_JSON_BACKUP, "w") as f:
-            json.dump(licenses_dict, f, indent=2)
-    except Exception as e:
-        logger.error(f"JSON backup save failed: {e}")
-    if supabase:
-        try:
-            for lic in licenses_dict.values():
-                supabase.table('licenses').upsert(lic).execute()
-        except Exception as e:
-            logger.error(f"Supabase upsert failed: {e}")
+# No JSON fallback – all operations go directly to Supabase
 
 def set_bot_token(token):
     global TELEGRAM_BOT_TOKEN
@@ -90,15 +52,21 @@ def notify_admin(message):
     if TELEGRAM_CHAT_ID and TELEGRAM_BOT_TOKEN:
         send_telegram(TELEGRAM_CHAT_ID, message)
 
-# ----- Helper functions -----
+# ----- Helper functions (direct Supabase queries) -----
+def get_user_license(chat_id):
+    """Return first license (dict) for this user, or None."""
+    try:
+        result = supabase.table('licenses').select('*').eq('telegram_chat_id', str(chat_id)).eq('is_master', False).execute()
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"get_user_license error: {e}")
+        return None
+
 def get_main_menu_markup(chat_id, lang):
     settings = db.get_user_settings(chat_id)
-    has_license = False
-    licenses = load_licenses()
-    for lic in licenses.values():
-        if lic.get("telegram_chat_id") == str(chat_id) and not lic.get("is_master", False):
-            has_license = True
-            break
+    has_license = get_user_license(chat_id) is not None
     show_trial = (not has_license) and (not settings["trial_used"])
     buttons = []
     if show_trial:
@@ -122,19 +90,14 @@ def answer_callback(callback_id):
         pass
 
 def check_license_status(chat_id, lang):
-    licenses = load_licenses()
-    found = None
-    for key, data in licenses.items():
-        if data.get("telegram_chat_id") == str(chat_id) and not data.get("is_master", False):
-            found = (key, data)
-            break
-    if not found:
+    lic = get_user_license(chat_id)
+    if not lic:
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
-    license_key, lic = found
-    bound_account = lic.get("bound_account")
-    expires_at = lic.get("expires_at")
-    is_trial = lic.get("is_trial", False)
+    license_key = lic['license_key']
+    bound_account = lic.get('bound_account')
+    expires_at = lic.get('expires_at')
+    is_trial = lic.get('is_trial', False)
     expiry_str = expires_at if expires_at else MESSAGES["never"][lang]
     bound_str = bound_account if bound_account else MESSAGES["not_bound"][lang]
     trial_str = " (Trial)" if is_trial else ""
@@ -144,38 +107,36 @@ def check_license_status(chat_id, lang):
     send_telegram(chat_id, msg)
 
 def unbind_license(chat_id, lang):
-    licenses = load_licenses()
-    found_key = None
-    for key, data in licenses.items():
-        if data.get("telegram_chat_id") == str(chat_id) and not data.get("is_master", False):
-            found_key = key
-            break
-    if not found_key:
+    lic = get_user_license(chat_id)
+    if not lic:
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
-    lic = licenses[found_key]
-    bound_account = lic.get("bound_account")
+    bound_account = lic.get('bound_account')
     if bound_account is None:
         send_telegram(chat_id, MESSAGES["unbind_none"][lang])
         return
-    lic["bound_account"] = None
-    save_licenses(licenses)
-    send_telegram(chat_id, MESSAGES["unbind_success"][lang].format(account=bound_account))
-    admin_msg = MESSAGES["admin_unbind"][lang].format(user=chat_id, key=found_key, account=bound_account)
-    notify_admin(admin_msg)
+    try:
+        supabase.table('licenses').update({'bound_account': None}).eq('license_key', lic['license_key']).execute()
+        send_telegram(chat_id, MESSAGES["unbind_success"][lang].format(account=bound_account))
+        admin_msg = MESSAGES["admin_unbind"][lang].format(user=chat_id, key=lic['license_key'], account=bound_account)
+        notify_admin(admin_msg)
+    except Exception as e:
+        logger.error(f"unbind error: {e}")
+        send_telegram(chat_id, "Error unbinding license.")
 
 def handle_trial(chat_id, lang):
-    licenses = load_licenses()
-    for key, data in licenses.items():
-        if data.get("telegram_chat_id") == str(chat_id) and not data.get("is_master", False):
-            send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
-            return
+    if get_user_license(chat_id) is not None:
+        send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
+        return
     settings = db.get_user_settings(chat_id)
     if settings["trial_used"]:
         send_telegram(chat_id, MESSAGES["trial_not_available"][lang])
         return
     trial_days = 7
-    license_key, expires_at = activate_license_json(chat_id, trial_days, is_trial=True)
+    license_key, expires_at = create_or_extend_license(chat_id, trial_days, is_trial=True)
+    if not license_key:
+        send_telegram(chat_id, "Error creating trial license. Please try later.")
+        return
     expiry_str = expires_at if expires_at else "7 days"
     db.mark_trial_used(chat_id)
     msg = MESSAGES["trial_success"][lang].format(key=license_key, expires=expiry_str)
@@ -183,13 +144,8 @@ def handle_trial(chat_id, lang):
     notify_admin(f"🧪 New trial license\nUser: {chat_id}\nKey: {license_key}\nExpires: {expiry_str}")
 
 def handle_resume(chat_id, lang):
-    licenses = load_licenses()
-    found = False
-    for data in licenses.values():
-        if data.get("telegram_chat_id") == str(chat_id) and not data.get("is_master", False):
-            found = True
-            break
-    if not found:
+    lic = get_user_license(chat_id)
+    if not lic:
         send_telegram(chat_id, MESSAGES["resume_not_needed"][lang])
         return
     settings = db.get_user_settings(chat_id)
@@ -237,13 +193,7 @@ def toggle_auto_report(chat_id, lang):
     show_settings_menu(chat_id, lang)
 
 def handle_report(chat_id, period, lang):
-    licenses = load_licenses()
-    found = False
-    for data in licenses.values():
-        if data.get("telegram_chat_id") == str(chat_id) and not data.get("is_master", False):
-            found = True
-            break
-    if not found:
+    if not get_user_license(chat_id):
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
     purchase_date = reporting.get_license_purchase_date(str(chat_id))
@@ -358,48 +308,52 @@ def create_payment_invoice(chat_id, plan_id, lang):
         logger.error(f"NowPayments error: {str(e)}")
         send_telegram(chat_id, MESSAGES["payment_error"][lang])
 
-def activate_license_json(telegram_chat_id, expires_days, is_trial=False):
-    licenses = load_licenses()
-    now = datetime.now()
-    found_key = None
-    for key, data in licenses.items():
-        if data.get("telegram_chat_id") == str(telegram_chat_id) and not data.get("is_master", False):
-            found_key = key
-            break
-    if found_key:
-        lic = licenses[found_key]
-        old_expiry = lic.get("expires_at")
-        if expires_days is None:
-            new_expiry = None
-        else:
-            if old_expiry:
-                old_date = datetime.fromisoformat(old_expiry)
-                if old_date > now:
-                    new_expiry = (old_date + timedelta(days=expires_days)).isoformat()
+def create_or_extend_license(telegram_chat_id, expires_days, is_trial=False):
+    """Create a new license or extend existing one in Supabase."""
+    try:
+        now = datetime.now()
+        # Check existing license for this user
+        existing = supabase.table('licenses').select('*').eq('telegram_chat_id', str(telegram_chat_id)).eq('is_master', False).execute()
+        if existing.data:
+            lic = existing.data[0]
+            license_key = lic['license_key']
+            old_expiry = lic.get('expires_at')
+            if expires_days is None:
+                new_expiry = None
+            else:
+                if old_expiry:
+                    old_date = datetime.fromisoformat(old_expiry)
+                    if old_date > now:
+                        new_expiry = (old_date + timedelta(days=expires_days)).isoformat()
+                    else:
+                        new_expiry = (now + timedelta(days=expires_days)).isoformat()
                 else:
                     new_expiry = (now + timedelta(days=expires_days)).isoformat()
-            else:
-                new_expiry = (now + timedelta(days=expires_days)).isoformat()
-        if not is_trial and lic.get("is_trial", False):
-            lic["is_trial"] = False
-        lic["expires_at"] = new_expiry
-        save_licenses(licenses)
-        return found_key, new_expiry
-    else:
-        license_key = secrets.token_hex(16).upper()
-        expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
-        licenses[license_key] = {
-            "license_key": license_key,
-            "telegram_chat_id": str(telegram_chat_id),
-            "bound_account": None,
-            "activated_at": now.isoformat(),
-            "expires_at": expires_at,
-            "is_master": False,
-            "is_active": True,
-            "is_trial": is_trial
-        }
-        save_licenses(licenses)
-        return license_key, expires_at
+            # Update
+            update_data = {'expires_at': new_expiry}
+            if not is_trial and lic.get('is_trial', False):
+                update_data['is_trial'] = False
+            supabase.table('licenses').update(update_data).eq('license_key', license_key).execute()
+            return license_key, new_expiry
+        else:
+            # Create new license
+            license_key = secrets.token_hex(16).upper()
+            expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
+            new_license = {
+                "license_key": license_key,
+                "telegram_chat_id": str(telegram_chat_id),
+                "bound_account": None,
+                "activated_at": now.isoformat(),
+                "expires_at": expires_at,
+                "is_master": False,
+                "is_active": True,
+                "is_trial": is_trial
+            }
+            supabase.table('licenses').insert(new_license).execute()
+            return license_key, expires_at
+    except Exception as e:
+        logger.error(f"create_or_extend_license error: {e}")
+        return None, None
 
 # ========== Telegram webhook endpoint ==========
 @bot_bp.route("/webhook/telegram", methods=["POST"])
