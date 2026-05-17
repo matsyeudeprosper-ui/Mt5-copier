@@ -11,7 +11,7 @@ PAIRING ENGINE MODE:
 import math
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import asdict
-from .models import (
+from models import (
     PositionInfo, Candidate, BasketHealth, WinnerAction,
     PairingDecision, PairingConfig, PairingEngineState
 )
