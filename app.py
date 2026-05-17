@@ -38,11 +38,9 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logger.warning("Supabase credentials missing – using JSON fallback")
 
-# Initialize local database (for user settings, orders, etc.)
+# Initialize local database
 db.init_db()
 db.sync_master_key(MASTER_KEY)
-
-# Set bot token for telegram module
 set_bot_token(TELEGRAM_BOT_TOKEN)
 
 # Register blueprints
@@ -127,7 +125,7 @@ def log_heartbeat(data):
     except Exception as e:
         logger.error(f"Failed to log heartbeat: {e}")
 
-# ---------- Simple idempotency cache for pairing decisions ----------
+# ---------- Idempotency cache ----------
 processed_requests = {}
 REQUEST_CACHE_TTL_SECONDS = 60
 
@@ -258,7 +256,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- PAIRING DECISION ENDPOINT with idempotency and safe parsing ----------
+# ---------- PAIRING DECISION ENDPOINT ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()
@@ -269,7 +267,7 @@ def pairing_decision():
     if not request_id:
         return jsonify({"error": "Missing request_id"}), 400
 
-    # Idempotency: return cached response if already processed (within TTL)
+    # Idempotency
     if request_id in processed_requests:
         cached = processed_requests[request_id]
         if datetime.now() < cached["expires_at"]:
@@ -280,14 +278,19 @@ def pairing_decision():
     basket_hash = data.get("basket_hash", "")
 
     try:
-        # Safe unpacking for config and state
         from models import PairingConfig, PairingEngineState, PositionInfo
+        from pairing_engine import get_best_pairing_decision as engine_decision
+        from dataclasses import asdict
+
+        # Safe config unpacking
         cfg = data.get("config", {})
         config = PairingConfig(**{k: cfg.get(k) for k in PairingConfig.__dataclass_fields__.keys()})
+
+        # Safe state unpacking
         st = data.get("state", {})
         state = PairingEngineState(**{k: st.get(k) for k in PairingEngineState.__dataclass_fields__.keys()})
 
-        # Build positions list with tolerant is_buy field
+        # Build positions with tolerant is_buy
         positions = []
         for p in data.get("positions", []):
             is_buy = p.get("is_buy", p.get("isBuy", False))
@@ -306,7 +309,7 @@ def pairing_decision():
         atr_h4 = data.get("atr_h4", 0.001)
         active_flip_ticket = data.get("active_flip_ticket", None)
 
-        decision = get_best_pairing_decision(
+        decision = engine_decision(
             positions=positions,
             direction_locked=direction_locked,
             current_direction_is_buy=current_direction_is_buy,
@@ -318,7 +321,7 @@ def pairing_decision():
             active_flip_ticket=active_flip_ticket
         )
 
-        expires_at = int(time.time()) + 5   # 5 seconds validity
+        expires_at = int(time.time()) + 5
         response = {
             "request_id": request_id,
             "expires_at": expires_at,
@@ -326,16 +329,19 @@ def pairing_decision():
             "decision": asdict(decision) if decision else None
         }
 
-        # Cache for idempotency
+        # Cache response
         processed_requests[request_id] = {
             "expires_at": datetime.now() + timedelta(seconds=REQUEST_CACHE_TTL_SECONDS),
             "response": response
         }
 
         return jsonify(response), 200
+
     except Exception as e:
-        logger.error(f"Pairing decision error: {e}\n{traceback.format_exc()}")
-        return jsonify({"error": "Internal server error"}), 500
+        # Log full traceback and return a 500 with the error message (for debugging)
+        error_trace = traceback.format_exc()
+        logger.error(f"Pairing decision error: {e}\n{error_trace}")
+        return jsonify({"error": str(e), "trace": error_trace}), 500
 
 # ---------- ADMIN ENDPOINTS ----------
 @app.route("/admin/set-config", methods=["POST"])
@@ -463,10 +469,10 @@ if not app.debug:
     threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("Keep-alive thread started (every 60 seconds)")
 
-# Start scheduler (from existing code)
+# Start scheduler
 scheduler = start_scheduler()
 
-# ---------- EXISTING ENDPOINTS (health, buy, payment, test) ----------
+# ---------- EXISTING ENDPOINTS ----------
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "alive"}
