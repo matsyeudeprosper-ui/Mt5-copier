@@ -20,15 +20,13 @@ NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# Initialize Supabase client (required, will crash if missing)
+# Initialize Supabase client (required)
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise Exception("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
+    raise Exception("SUPABASE_URL and SUPABASE_KEY must be set")
 
 from supabase import create_client, Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 logger.info("Supabase client initialized for bot")
-
-# No JSON fallback – all operations go directly to Supabase
 
 def set_bot_token(token):
     global TELEGRAM_BOT_TOKEN
@@ -52,14 +50,10 @@ def notify_admin(message):
     if TELEGRAM_CHAT_ID and TELEGRAM_BOT_TOKEN:
         send_telegram(TELEGRAM_CHAT_ID, message)
 
-# ----- Helper functions (direct Supabase queries) -----
 def get_user_license(chat_id):
-    """Return first license (dict) for this user, or None."""
     try:
         result = supabase.table('licenses').select('*').eq('telegram_chat_id', str(chat_id)).eq('is_master', False).execute()
-        if result.data:
-            return result.data[0]
-        return None
+        return result.data[0] if result.data else None
     except Exception as e:
         logger.error(f"get_user_license error: {e}")
         return None
@@ -132,8 +126,7 @@ def handle_trial(chat_id, lang):
     if settings["trial_used"]:
         send_telegram(chat_id, MESSAGES["trial_not_available"][lang])
         return
-    trial_days = 7
-    license_key, expires_at = create_or_extend_license(chat_id, trial_days, is_trial=True)
+    license_key, expires_at = create_or_extend_license(chat_id, 7, is_trial=True)
     if not license_key:
         send_telegram(chat_id, "Error creating trial license. Please try later.")
         return
@@ -312,7 +305,6 @@ def create_or_extend_license(telegram_chat_id, expires_days, is_trial=False):
     """Create a new license or extend existing one in Supabase."""
     try:
         now = datetime.now()
-        # Check existing license for this user
         existing = supabase.table('licenses').select('*').eq('telegram_chat_id', str(telegram_chat_id)).eq('is_master', False).execute()
         if existing.data:
             lic = existing.data[0]
@@ -329,14 +321,12 @@ def create_or_extend_license(telegram_chat_id, expires_days, is_trial=False):
                         new_expiry = (now + timedelta(days=expires_days)).isoformat()
                 else:
                     new_expiry = (now + timedelta(days=expires_days)).isoformat()
-            # Update
             update_data = {'expires_at': new_expiry}
             if not is_trial and lic.get('is_trial', False):
                 update_data['is_trial'] = False
             supabase.table('licenses').update(update_data).eq('license_key', license_key).execute()
             return license_key, new_expiry
         else:
-            # Create new license
             license_key = secrets.token_hex(16).upper()
             expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
             new_license = {
@@ -345,6 +335,7 @@ def create_or_extend_license(telegram_chat_id, expires_days, is_trial=False):
                 "bound_account": None,
                 "activated_at": now.isoformat(),
                 "expires_at": expires_at,
+                "min_version": "1.0.0",
                 "is_master": False,
                 "is_active": True,
                 "is_trial": is_trial
