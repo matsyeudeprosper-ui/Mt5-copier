@@ -10,31 +10,25 @@ class PositionInfo:
 
 @dataclass
 class EntryDecisionRequest:
+    # Required fields (no defaults)
     mode: Literal["initial_entry", "grid_addition"]
-
     symbol: str
-
     bid: float
     ask: float
     point: float
-
-    # Exact trigger level (EA determined)
     trigger_level_price: float
     trigger_level_is_high: bool
     trigger_level_index: int
-
     direction_locked: bool
     current_direction_is_buy: bool
+    positions: List[PositionInfo]
 
+    # Optional fields with defaults
     lowest_buy_entry: float = 0.0
     highest_sell_entry: float = 0.0
-
     last_buy_addition_price: float = 0.0
     last_sell_addition_price: float = 0.0
-
     required_spacing: float = 0.0
-
-    positions: List[PositionInfo]
 
 
 @dataclass
