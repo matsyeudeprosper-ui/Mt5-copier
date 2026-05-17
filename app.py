@@ -4,6 +4,7 @@ import time
 import logging
 import json
 import traceback
+import math
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template
 import requests
@@ -14,6 +15,8 @@ from scheduler import start_scheduler
 from risk_engine import calculate_dynamic_lot_size, can_add_position
 from pairing_engine import get_best_pairing_decision, PairingConfig, PairingEngineState
 from supabase import create_client, Client
+from entry_engine import get_entry_decision
+from entry_models import EntryDecisionRequest
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -38,9 +41,11 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     logger.warning("Supabase credentials missing – using JSON fallback")
 
-# Initialize local database
+# Initialize local database (for user settings, orders, etc.)
 db.init_db()
 db.sync_master_key(MASTER_KEY)
+
+# Set bot token for telegram module
 set_bot_token(TELEGRAM_BOT_TOKEN)
 
 # Register blueprints
@@ -125,7 +130,7 @@ def log_heartbeat(data):
     except Exception as e:
         logger.error(f"Failed to log heartbeat: {e}")
 
-# ---------- Idempotency cache ----------
+# ---------- Simple idempotency cache for pairing decisions ----------
 processed_requests = {}
 REQUEST_CACHE_TTL_SECONDS = 60
 
@@ -282,15 +287,11 @@ def pairing_decision():
         from pairing_engine import get_best_pairing_decision as engine_decision
         from dataclasses import asdict
 
-        # Safe config unpacking
         cfg = data.get("config", {})
         config = PairingConfig(**{k: cfg.get(k) for k in PairingConfig.__dataclass_fields__.keys()})
-
-        # Safe state unpacking
         st = data.get("state", {})
         state = PairingEngineState(**{k: st.get(k) for k in PairingEngineState.__dataclass_fields__.keys()})
 
-        # Build positions with tolerant is_buy
         positions = []
         for p in data.get("positions", []):
             is_buy = p.get("is_buy", p.get("isBuy", False))
@@ -329,19 +330,30 @@ def pairing_decision():
             "decision": asdict(decision) if decision else None
         }
 
-        # Cache response
         processed_requests[request_id] = {
             "expires_at": datetime.now() + timedelta(seconds=REQUEST_CACHE_TTL_SECONDS),
             "response": response
         }
 
         return jsonify(response), 200
-
     except Exception as e:
-        # Log full traceback and return a 500 with the error message (for debugging)
-        error_trace = traceback.format_exc()
-        logger.error(f"Pairing decision error: {e}\n{error_trace}")
-        return jsonify({"error": str(e), "trace": error_trace}), 500
+        logger.error(f"Pairing decision error: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+# ---------- ENTRY / ADDITION DECISION ENDPOINT ----------
+@app.route("/entry-decision", methods=["POST"])
+def entry_decision():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON"}), 400
+
+    try:
+        req = EntryDecisionRequest(**data)
+        resp = get_entry_decision(req)
+        return jsonify(resp.dict()), 200
+    except Exception as e:
+        logger.error(f"Entry decision error: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
 
 # ---------- ADMIN ENDPOINTS ----------
 @app.route("/admin/set-config", methods=["POST"])
@@ -469,10 +481,10 @@ if not app.debug:
     threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("Keep-alive thread started (every 60 seconds)")
 
-# Start scheduler
+# Start scheduler (from existing code)
 scheduler = start_scheduler()
 
-# ---------- EXISTING ENDPOINTS ----------
+# ---------- EXISTING ENDPOINTS (health, buy, payment, test) ----------
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "alive"}
