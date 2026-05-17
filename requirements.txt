@@ -4,3 +4,5 @@ requests==2.31.0
 setuptools>=74.1.2
 numpy>=2.3.3
 apscheduler==3.10.4
+supabase==2.5.0
+python-dotenv==1.0.0

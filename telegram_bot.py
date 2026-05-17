@@ -5,42 +5,68 @@ import logging
 import requests
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
-import db  # Keep for user settings, but not for licenses
+import db
 from config import PLANS, MESSAGES
 import reporting
+from supabase import create_client, Client
 
 bot_bp = Blueprint('bot', __name__)
 logger = logging.getLogger(__name__)
 
-# Global bot token (set from app.py)
-TELEGRAM_BOT_TOKEN = None
+# Environment variables (set in Render)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "")
 NOWPAYMENTS_IPN_SECRET = os.environ.get("NOWPAYMENTS_IPN_SECRET", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
-# JSON file for licenses (same as app.py)
+# Initialize Supabase client
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+else:
+    supabase = None
+    logger.warning("Supabase credentials missing – bot will fallback to JSON")
+
+# JSON backup for licenses (if Supabase unavailable)
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-LICENSES_FILE = os.path.join(DATA_DIR, "licenses.json")
+LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
 
 def load_licenses():
-    """Load licenses from JSON file"""
-    if not os.path.exists(LICENSES_FILE):
+    """Load licenses from Supabase, fallback to JSON backup"""
+    if supabase:
+        try:
+            result = supabase.table('licenses').select('*').execute()
+            if result.data:
+                licenses_dict = {}
+                for row in result.data:
+                    licenses_dict[row['license_key']] = row
+                return licenses_dict
+        except Exception as e:
+            logger.error(f"Supabase load failed: {e}")
+    if not os.path.exists(LICENSES_JSON_BACKUP):
         return {}
     try:
-        with open(LICENSES_FILE, "r") as f:
+        with open(LICENSES_JSON_BACKUP, "r") as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"Failed to load licenses: {e}")
+        logger.error(f"JSON load failed: {e}")
         return {}
 
-def save_licenses(licenses):
-    """Save licenses to JSON file"""
+def save_licenses(licenses_dict):
+    """Save licenses to Supabase (upsert) and JSON backup"""
     try:
-        with open(LICENSES_FILE, "w") as f:
-            json.dump(licenses, f, indent=2)
+        with open(LICENSES_JSON_BACKUP, "w") as f:
+            json.dump(licenses_dict, f, indent=2)
     except Exception as e:
-        logger.error(f"Failed to save licenses: {e}")
+        logger.error(f"JSON backup save failed: {e}")
+    if supabase:
+        try:
+            for lic in licenses_dict.values():
+                supabase.table('licenses').upsert(lic).execute()
+        except Exception as e:
+            logger.error(f"Supabase upsert failed: {e}")
 
 def set_bot_token(token):
     global TELEGRAM_BOT_TOKEN
@@ -64,9 +90,9 @@ def notify_admin(message):
     if TELEGRAM_CHAT_ID and TELEGRAM_BOT_TOKEN:
         send_telegram(TELEGRAM_CHAT_ID, message)
 
-# ----- Helper functions for bot (using JSON) -----
+# ----- Helper functions -----
 def get_main_menu_markup(chat_id, lang):
-    settings = db.get_user_settings(chat_id)  # keep user settings in DB
+    settings = db.get_user_settings(chat_id)
     has_license = False
     licenses = load_licenses()
     for lic in licenses.values():
@@ -140,12 +166,10 @@ def unbind_license(chat_id, lang):
 
 def handle_trial(chat_id, lang):
     licenses = load_licenses()
-    # Check if user already has a license
     for key, data in licenses.items():
         if data.get("telegram_chat_id") == str(chat_id) and not data.get("is_master", False):
             send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
             return
-    # Check trial_used from user settings (kept in DB for now)
     settings = db.get_user_settings(chat_id)
     if settings["trial_used"]:
         send_telegram(chat_id, MESSAGES["trial_not_available"][lang])
@@ -159,7 +183,6 @@ def handle_trial(chat_id, lang):
     notify_admin(f"🧪 New trial license\nUser: {chat_id}\nKey: {license_key}\nExpires: {expiry_str}")
 
 def handle_resume(chat_id, lang):
-    # Check if user has a license (JSON)
     licenses = load_licenses()
     found = False
     for data in licenses.values():
@@ -214,7 +237,6 @@ def toggle_auto_report(chat_id, lang):
     show_settings_menu(chat_id, lang)
 
 def handle_report(chat_id, period, lang):
-    # Check if user has a license (JSON)
     licenses = load_licenses()
     found = False
     for data in licenses.values():
@@ -224,7 +246,6 @@ def handle_report(chat_id, period, lang):
     if not found:
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
-    # Use reporting module (assumes it works with JSON or trades)
     purchase_date = reporting.get_license_purchase_date(str(chat_id))
     if not purchase_date:
         send_telegram(chat_id, MESSAGES["no_license"][lang])
@@ -326,7 +347,6 @@ def create_payment_invoice(chat_id, plan_id, lang):
             send_telegram(chat_id, MESSAGES["payment_error"][lang])
             return
 
-        # Store order in DB (you may want to move to JSON, but DB is fine for temporary orders)
         conn = db.get_conn()
         c = conn.cursor()
         c.execute("INSERT INTO orders (order_id, plan, license_key, telegram_chat_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -339,10 +359,8 @@ def create_payment_invoice(chat_id, plan_id, lang):
         send_telegram(chat_id, MESSAGES["payment_error"][lang])
 
 def activate_license_json(telegram_chat_id, expires_days, is_trial=False):
-    """Store license in JSON file, not database"""
     licenses = load_licenses()
     now = datetime.now()
-    # Check if user already has a license
     found_key = None
     for key, data in licenses.items():
         if data.get("telegram_chat_id") == str(telegram_chat_id) and not data.get("is_master", False):
@@ -368,7 +386,6 @@ def activate_license_json(telegram_chat_id, expires_days, is_trial=False):
         save_licenses(licenses)
         return found_key, new_expiry
     else:
-        # Create new license
         license_key = secrets.token_hex(16).upper()
         expires_at = None if expires_days is None else (now + timedelta(days=expires_days)).isoformat()
         licenses[license_key] = {

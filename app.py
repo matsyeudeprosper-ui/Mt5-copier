@@ -10,19 +10,30 @@ import db
 from trade_endpoints import trade_bp
 from telegram_bot import bot_bp, set_bot_token
 from scheduler import start_scheduler
-from risk_engine import calculate_dynamic_lot_size, can_add_position   # new
+from risk_engine import calculate_dynamic_lot_size, can_add_position
+from supabase import create_client, Client
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "change_me_admin")
 MASTER_KEY = os.environ.get("MASTER_KEY", "YourMasterKeyHere123!")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize database and sync master key (keep existing DB logic for other features)
+# Initialize Supabase client
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Supabase client initialized")
+else:
+    supabase = None
+    logger.warning("Supabase credentials missing – license storage will not work")
+
+# Initialize database and sync master key (keep for user settings, orders, etc.)
 db.init_db()
 db.sync_master_key(MASTER_KEY)
 
@@ -33,48 +44,66 @@ set_bot_token(TELEGRAM_BOT_TOKEN)
 app.register_blueprint(trade_bp)
 app.register_blueprint(bot_bp)
 
-# ---------- JSON file storage for licenses, config, heartbeats ----------
+# ---------- JSON fallback for licenses (in case Supabase is unavailable) ----------
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
-LICENSES_FILE = os.path.join(DATA_DIR, "licenses.json")
+LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 HEARTBEAT_FILE = os.path.join(DATA_DIR, "heartbeat.log")
 
 # Default configuration (fallback if file missing)
 DEFAULT_CONFIG = {
-    "participation_percent": 5.0,      # GrowthParticipationPercent
-    "mor_safety_multiplier": 1.15,     # MORSafetyMultiplier
-    "max_recovery_additions": 5,       # g_maxRecoveryAdditions (unlimited but set high)
-    "hardstop_percent": 5.0,           # Max expected move percent
-    "min_entry_spacing_percent": 0.1,  # MinEntrySpacingPercent
+    "participation_percent": 5.0,
+    "mor_safety_multiplier": 1.15,
+    "max_recovery_additions": 5,
+    "hardstop_percent": 5.0,
+    "min_entry_spacing_percent": 0.1,
     "max_grid_levels": 6,
     "enable_flip_engine": False,
     "use_extreme_tracking": False
 }
 
 def load_licenses():
-    """Load licenses from JSON file. Returns dict: license_key -> license_data"""
-    if not os.path.exists(LICENSES_FILE):
-        with open(LICENSES_FILE, "w") as f:
-            json.dump({}, f)
+    """Load licenses from Supabase, fallback to JSON backup if needed"""
+    if supabase:
+        try:
+            result = supabase.table('licenses').select('*').execute()
+            if result.data:
+                # Convert list to dict keyed by license_key (for compatibility with old code)
+                licenses_dict = {}
+                for row in result.data:
+                    licenses_dict[row['license_key']] = row
+                return licenses_dict
+        except Exception as e:
+            logger.error(f"Supabase load failed: {e}")
+    # Fallback to JSON
+    if not os.path.exists(LICENSES_JSON_BACKUP):
         return {}
     try:
-        with open(LICENSES_FILE, "r") as f:
+        with open(LICENSES_JSON_BACKUP, "r") as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"Failed to load licenses: {e}")
+        logger.error(f"JSON load failed: {e}")
         return {}
 
-def save_licenses(licenses):
-    """Save licenses dict to JSON file"""
+def save_licenses(licenses_dict):
+    """Save licenses to Supabase (upsert) and also backup to JSON"""
+    # Backup to JSON
     try:
-        with open(LICENSES_FILE, "w") as f:
-            json.dump(licenses, f, indent=2)
+        with open(LICENSES_JSON_BACKUP, "w") as f:
+            json.dump(licenses_dict, f, indent=2)
     except Exception as e:
-        logger.error(f"Failed to save licenses: {e}")
+        logger.error(f"JSON backup save failed: {e}")
+    # Sync to Supabase
+    if supabase:
+        try:
+            for lic in licenses_dict.values():
+                # Upsert: if exists update, else insert
+                supabase.table('licenses').upsert(lic).execute()
+        except Exception as e:
+            logger.error(f"Supabase upsert failed: {e}")
 
 def load_config():
-    """Load config from JSON file, return dict (with defaults merged)"""
     if not os.path.exists(CONFIG_FILE):
         return DEFAULT_CONFIG.copy()
     try:
@@ -88,7 +117,6 @@ def load_config():
         return DEFAULT_CONFIG.copy()
 
 def save_config(config):
-    """Save config dict to JSON file"""
     try:
         with open(CONFIG_FILE, "w") as f:
             json.dump(config, f, indent=2)
@@ -96,14 +124,13 @@ def save_config(config):
         logger.error(f"Failed to save config: {e}")
 
 def log_heartbeat(data):
-    """Append heartbeat data to log file (one JSON line per entry)"""
     try:
         with open(HEARTBEAT_FILE, "a") as f:
             f.write(json.dumps(data) + "\n")
     except Exception as e:
         logger.error(f"Failed to log heartbeat: {e}")
 
-# ---------- ENDPOINTS FOR EA ----------
+# ---------- ENDPOINTS ----------
 @app.route("/validate-license", methods=["POST"])
 def validate_license():
     data = request.get_json()
@@ -117,31 +144,45 @@ def validate_license():
     if not license_key or account is None:
         return jsonify({"error": "Missing license or account"}), 400
 
-    licenses = load_licenses()
-    lic = licenses.get(license_key)
-    if not lic:
-        return jsonify({"valid": False, "reason": "License not found"}), 200
+    try:
+        if supabase:
+            result = supabase.table('licenses').select('*').eq('license_key', license_key).execute()
+            if not result.data:
+                return jsonify({"valid": False, "reason": "License not found"}), 200
+            lic = result.data[0]
+        else:
+            licenses = load_licenses()
+            lic = licenses.get(license_key)
+            if not lic:
+                return jsonify({"valid": False, "reason": "License not found"}), 200
 
-    # Check if expired
-    expires_at = lic.get("expires_at")
-    if expires_at:
-        try:
-            exp_date = datetime.fromisoformat(expires_at)
-            if datetime.now() > exp_date:
-                return jsonify({"valid": False, "reason": "License expired"}), 200
-        except:
-            pass
+        # Check expiry
+        expires_at = lic.get('expires_at')
+        if expires_at:
+            try:
+                exp_date = datetime.fromisoformat(expires_at)
+                if datetime.now() > exp_date:
+                    return jsonify({"valid": False, "reason": "License expired"}), 200
+            except:
+                pass
 
-    # Check bound account (if any)
-    bound_account = lic.get("bound_account")
-    if bound_account is not None and bound_account != account:
-        return jsonify({"valid": False, "reason": "Account not bound"}), 200
+        # Check bound account
+        bound_account = lic.get('bound_account')
+        if bound_account is not None and bound_account != account:
+            return jsonify({"valid": False, "reason": "Account not bound"}), 200
 
-    return jsonify({
-        "valid": True,
-        "expires": lic.get("expires_at", "2099-12-31"),
-        "min_version": lic.get("min_version", "1.0.0")
-    }), 200
+        # Check is_active
+        if not lic.get('is_active', True):
+            return jsonify({"valid": False, "reason": "License inactive"}), 200
+
+        return jsonify({
+            "valid": True,
+            "expires": lic.get('expires_at', '2099-12-31'),
+            "min_version": lic.get('min_version', '1.0.0')
+        }), 200
+    except Exception as e:
+        logger.error(f"validate_license error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/get-config", methods=["GET"])
 def get_config():
@@ -167,7 +208,6 @@ def heartbeat():
     log_heartbeat(data)
     return jsonify({"status": "ok"}), 200
 
-# ---------- NEW ENDPOINTS FOR RISK ENGINE (SECRET FORMULAS) ----------
 @app.route("/calculate-lot", methods=["POST"])
 def calculate_lot():
     data = request.get_json()
@@ -220,7 +260,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- ADMIN ENDPOINTS (protected by X-Admin-Token) ----------
+# ---------- ADMIN ENDPOINTS ----------
 @app.route("/admin/set-config", methods=["POST"])
 def admin_set_config():
     if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
@@ -250,23 +290,41 @@ def admin_create_license():
         return jsonify({"error": "Missing license_key"}), 400
 
     license_key = data["license_key"].strip()
-    bound_account = data.get("bound_account")  # can be None (not bound)
+    bound_account = data.get("bound_account")
     expires_at = data.get("expires_at", "2099-12-31")
     min_version = data.get("min_version", "1.0.0")
+    telegram_chat_id = data.get("telegram_chat_id")
+    is_trial = data.get("is_trial", False)
 
-    licenses = load_licenses()
-    if license_key in licenses:
-        return jsonify({"error": "License already exists"}), 400
-
-    licenses[license_key] = {
+    new_license = {
+        "license_key": license_key,
         "bound_account": bound_account,
         "expires_at": expires_at,
         "min_version": min_version,
         "created_at": datetime.now().isoformat(),
-        "is_active": True
+        "is_active": True,
+        "is_trial": is_trial,
+        "is_master": False,
+        "telegram_chat_id": telegram_chat_id
     }
-    save_licenses(licenses)
-    return jsonify({"status": "created", "license": license_key}), 201
+
+    try:
+        if supabase:
+            # Check if exists
+            existing = supabase.table('licenses').select('license_key').eq('license_key', license_key).execute()
+            if existing.data:
+                return jsonify({"error": "License already exists"}), 400
+            supabase.table('licenses').insert(new_license).execute()
+        else:
+            licenses = load_licenses()
+            if license_key in licenses:
+                return jsonify({"error": "License already exists"}), 400
+            licenses[license_key] = new_license
+            save_licenses(licenses)
+        return jsonify({"status": "created", "license": license_key}), 201
+    except Exception as e:
+        logger.error(f"create_license error: {e}")
+        return jsonify({"error": "Database error"}), 500
 
 @app.route("/admin/disable-license", methods=["POST"])
 def admin_disable_license():
@@ -278,21 +336,41 @@ def admin_disable_license():
         return jsonify({"error": "Missing license_key"}), 400
 
     license_key = data["license_key"].strip()
-    licenses = load_licenses()
-    if license_key not in licenses:
-        return jsonify({"error": "License not found"}), 404
 
-    licenses[license_key]["is_active"] = False
-    licenses[license_key]["expires_at"] = datetime.now().isoformat()
-    save_licenses(licenses)
-    return jsonify({"status": "disabled"}), 200
+    try:
+        if supabase:
+            result = supabase.table('licenses').update({
+                "is_active": False,
+                "expires_at": datetime.now().isoformat()
+            }).eq('license_key', license_key).execute()
+            if not result.data:
+                return jsonify({"error": "License not found"}), 404
+        else:
+            licenses = load_licenses()
+            if license_key not in licenses:
+                return jsonify({"error": "License not found"}), 404
+            licenses[license_key]["is_active"] = False
+            licenses[license_key]["expires_at"] = datetime.now().isoformat()
+            save_licenses(licenses)
+        return jsonify({"status": "disabled"}), 200
+    except Exception as e:
+        logger.error(f"disable_license error: {e}")
+        return jsonify({"error": "Database error"}), 500
 
 @app.route("/licenses", methods=["GET"])
 def list_licenses():
     if request.headers.get("X-Admin-Token") != ADMIN_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
-    licenses = load_licenses()
-    return jsonify(licenses), 200
+    try:
+        if supabase:
+            result = supabase.table('licenses').select('*').execute()
+            return jsonify(result.data), 200
+        else:
+            licenses = load_licenses()
+            return jsonify(list(licenses.values())), 200
+    except Exception as e:
+        logger.error(f"list_licenses error: {e}")
+        return jsonify({"error": "Database error"}), 500
 
 # ---------- KEEP-ALIVE THREAD ----------
 def keep_alive():
