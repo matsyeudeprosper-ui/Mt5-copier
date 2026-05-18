@@ -273,7 +273,7 @@ def pairing_decision():
     if not request_id:
         return jsonify({"error": "Missing request_id"}), 400
 
-    # Idempotency
+    # Idempotency cache
     if request_id in processed_requests:
         cached = processed_requests[request_id]
         if datetime.now() < cached["expires_at"]:
@@ -310,6 +310,12 @@ def pairing_decision():
         atr_h4 = data.get("atr_h4", 0.001)
         active_flip_ticket = data.get("active_flip_ticket", None)
 
+        # +++ FIX: extract account_info and pass to engine +++
+        account_info = data.get("account_info", {})
+        equity = account_info.get("equity", 0.0)
+        protected_floor = account_info.get("protected_floor", 0.0)
+        initial_equity = account_info.get("initial_equity", 0.0)
+
         decision = engine_decision(
             positions=positions,
             direction_locked=direction_locked,
@@ -319,7 +325,10 @@ def pairing_decision():
             state=state,
             current_time=current_time,
             atr_h4=atr_h4,
-            active_flip_ticket=active_flip_ticket
+            active_flip_ticket=active_flip_ticket,
+            equity=equity,
+            protected_floor=protected_floor,
+            initial_equity=initial_equity
         )
 
         expires_at = int(time.time()) + 5
@@ -336,10 +345,11 @@ def pairing_decision():
         }
 
         return jsonify(response), 200
+
     except Exception as e:
         logger.error(f"Pairing decision error: {e}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
-
+        
 # ---------- ENTRY / ADDITION DECISION ENDPOINT ----------
 @app.route("/entry-decision", methods=["POST"])
 def entry_decision():
