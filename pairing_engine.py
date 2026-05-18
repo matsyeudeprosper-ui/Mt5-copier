@@ -22,10 +22,6 @@ EPS = 1e-8
 # Helpers
 # ----------------------------------------------------------------------
 def normalize_volume(volume: float, lot_step: float, min_lot: float) -> float:
-    """
-    Replicate MathFloor(volume / lotStep) * lotStep.
-    CRITICAL: NEVER enlarge volume. If normalised volume < min_lot, return 0.0.
-    """
     if volume <= 0.0:
         return 0.0
     norm = math.floor(volume / lot_step + EPS) * lot_step
@@ -34,7 +30,6 @@ def normalize_volume(volume: float, lot_step: float, min_lot: float) -> float:
     return norm
 
 def one_r_value(symbol_info: Dict, min_entry_spacing_percent: float, fixed_lot_size: float) -> float:
-    """Exact replica of OneRValue() from MQL5."""
     price = symbol_info.get('bid', 0.0)
     grid_spacing = price * (min_entry_spacing_percent / 100.0)
     tick_value = symbol_info.get('tick_value', 1.0)
@@ -45,15 +40,13 @@ def one_r_value(symbol_info: Dict, min_entry_spacing_percent: float, fixed_lot_s
     return (grid_spacing / tick_size) * tick_value * fixed_lot_size
 
 def get_positions(positions: List[PositionInfo]) -> Tuple[List[PositionInfo], List[PositionInfo]]:
-    """Separate and sort losers (profit < 0) ascending, winners (profit > 0) descending."""
     losers = [p for p in positions if p.profit < -EPS]
     winners = [p for p in positions if p.profit > EPS]
-    losers.sort(key=lambda x: x.profit)                     # more negative first
-    winners.sort(key=lambda x: x.profit, reverse=True)     # highest profit first
+    losers.sort(key=lambda x: x.profit)
+    winners.sort(key=lambda x: x.profit, reverse=True)
     return losers, winners
 
 def generate_candidates(losers: List[PositionInfo], winners: List[PositionInfo]) -> List[Candidate]:
-    """Replicate GenerateCandidates() – up to 5 losers, 5 winners, net_ratio >= 0.75."""
     candidates = []
     max_l = min(len(losers), 5)
     max_w = min(len(winners), 5)
@@ -108,7 +101,6 @@ def generate_candidates(losers: List[PositionInfo], winners: List[PositionInfo])
 
 def compute_clean_score(losers: List[PositionInfo], winners: List[PositionInfo],
                         cand: Candidate, min_residual_volume: float) -> float:
-    """Replicate ComputeCleanScore()."""
     penalty = 0.0
     remaining_to_cover = cand.loser_loss
     for idx in cand.winner_idx:
@@ -127,7 +119,6 @@ def compute_clean_score(losers: List[PositionInfo], winners: List[PositionInfo],
 
 def compute_future_score(losers: List[PositionInfo], winners: List[PositionInfo],
                          cand: Candidate) -> float:
-    """Replicate ComputeFutureScore()."""
     remaining_loser_loss = 0.0
     remaining_winner_profit = 0.0
     used_loser = [False] * len(losers)
@@ -151,7 +142,6 @@ def compute_future_score(losers: List[PositionInfo], winners: List[PositionInfo]
 
 def score_candidates(candidates: List[Candidate], losers: List[PositionInfo],
                      winners: List[PositionInfo], min_residual_volume: float):
-    """Replicate ScoreCandidates() with exact weights and integrated risk_score."""
     if not candidates:
         return
     max_loss = max(c.loser_loss for c in candidates)
@@ -175,20 +165,17 @@ def score_candidates(candidates: List[Candidate], losers: List[PositionInfo],
 
 def compute_required_winner_profit(loser_loss: float, one_r: float,
                                    spread_cost: float, target_r: float) -> float:
-    """Replicate requiredWinnerProfit = loserLoss + max(oneR * target_r, spreadCost)"""
     target_net = max(one_r * target_r, spread_cost)
     return loser_loss + target_net
 
 def compute_required_price_for_candidate(losers: List[PositionInfo], winners: List[PositionInfo],
                                          cand: Candidate, direction_is_buy: bool,
                                          symbol_info: Dict, target_ratio: float) -> float:
-    """Replicate ComputeRequiredPriceForCandidate() with configurable target_ratio."""
     if not cand.valid:
         return 0.0
     required_winners_profit = cand.loser_loss * target_ratio
     current_winners_profit = cand.total_winner_profit
     if current_winners_profit >= required_winners_profit - EPS:
-        # Use appropriate current price (matches EA: ASK for BUY, BID for SELL)
         if direction_is_buy:
             return symbol_info.get('ask', 0.0)
         else:
@@ -222,7 +209,6 @@ def analyze_basket(positions: List[PositionInfo], direction_locked: bool,
                    margin: float, free_margin: float,
                    equity: float = 0.0, protected_floor: float = 0.0,
                    initial_equity: float = 0.0) -> BasketHealth:
-    """Replicate AnalyzeBasket() with exact floating DD calculation and pressure score."""
     bh = BasketHealth()
     buy_lots = 0.0
     sell_lots = 0.0
@@ -243,7 +229,6 @@ def analyze_basket(positions: List[PositionInfo], direction_locked: bool,
         sum_dist += dist * p.volume
         if p.volume > max_lot:
             max_lot = p.volume
-    # Exact EA floating DD logic
     bh.floating_dd = -bh.floating_dd
     if bh.floating_dd < 0:
         bh.floating_dd = 0.0
@@ -260,37 +245,25 @@ def analyze_basket(positions: List[PositionInfo], direction_locked: bool,
         opp_lots = sell_lots if current_direction_is_buy else buy_lots
         bh.hedge_ratio = opp_lots / main_lots if main_lots > EPS else 0.0
 
-    # ========== PRESSURE SCORE COMPUTATION ==========
-    # Normalize each component 0..1 (higher = more stressed)
-    # 1. Drawdown pressure
-    max_allowed_dd_usd = max(initial_equity * 0.10, 500.0)  # 10% of initial equity or $500
+    # Pressure score (0..1, higher = more stressed)
+    max_allowed_dd_usd = max(initial_equity * 0.10, 500.0) if initial_equity > 0 else 1000.0
     dd_pressure = min(bh.floating_dd / max_allowed_dd_usd, 1.0) if max_allowed_dd_usd > 0 else 0.0
-
-    # 2. Margin pressure
     margin_pressure = min(bh.margin_usage, 1.0)
-
-    # 3. Imbalance pressure (normalized by total lots + 0.5)
     max_imbalance_lots = max(bh.total_lots, 0.5)
     imbalance_pressure = min(bh.directional_imbalance / max_imbalance_lots, 1.0)
-
-    # 4. Exposure concentration
-    exposure_pressure = bh.exposure_concentration  # already 0..1
-
+    exposure_pressure = bh.exposure_concentration
     bh.pressure_score = (
         0.35 * dd_pressure +
         0.25 * margin_pressure +
         0.20 * imbalance_pressure +
         0.20 * exposure_pressure
     )
-    # Clamp to 0..1
     bh.pressure_score = max(0.0, min(1.0, bh.pressure_score))
-
     return bh
 
 def would_remaining_basket_improve(before: BasketHealth, after: BasketHealth,
                                    cand: Candidate, losers: List[PositionInfo],
                                    winners: List[PositionInfo]) -> bool:
-    """Replicate WouldRemainingBasketImprove()."""
     if after.total_lots >= before.total_lots * 0.95 - EPS:
         return False
     if after.directional_imbalance > before.directional_imbalance + EPS:
@@ -303,11 +276,7 @@ def future_safety_check(losers: List[PositionInfo], winners: List[PositionInfo],
                         cand: Candidate, winner_actions: List[WinnerAction],
                         config: PairingConfig, atr_h4: float,
                         current_price: float, direction_is_buy: bool) -> bool:
-    """
-    Replicate FutureSafetyCheck() and also check residuals from partial closes.
-    """
     min_residual = config.min_residual_volume
-    # 1. Orphan positions (untouched)
     for i, l in enumerate(losers):
         if i == cand.loser_idx:
             continue
@@ -319,7 +288,6 @@ def future_safety_check(losers: List[PositionInfo], winners: List[PositionInfo],
         if w.volume > EPS and w.volume < min_residual - EPS:
             return False
 
-    # 2. Residual volumes from partial closes
     for action in winner_actions:
         pos = next((w for w in winners if w.ticket == action.ticket), None)
         if pos:
@@ -327,7 +295,6 @@ def future_safety_check(losers: List[PositionInfo], winners: List[PositionInfo],
             if remaining > EPS and remaining < min_residual - EPS:
                 return False
 
-    # 3. New breakeven distance
     total_lots = 0.0
     sum_price = 0.0
     for i, l in enumerate(losers):
@@ -348,7 +315,6 @@ def future_safety_check(losers: List[PositionInfo], winners: List[PositionInfo],
         if distance > config.max_future_atr_distance * atr_h4 + EPS:
             return False
 
-    # 4. Remaining winners / losers
     remaining_winners = 0
     for i, w in enumerate(winners):
         if i not in cand.winner_idx and w.profit > EPS:
@@ -366,10 +332,6 @@ def simulate_candidate_execution(losers: List[PositionInfo], winners: List[Posit
                                  symbol_info: Dict, one_r: float,
                                  fixed_lot_size: float,
                                  active_flip_ticket: Optional[int] = None) -> Tuple[float, float, float, List[WinnerAction], bool]:
-    """
-    Simulate ExecuteCandidate().
-    Returns (realised_winner_profit, required_winner_profit, expected_net_profit, winner_actions, success).
-    """
     loser = losers[cand.loser_idx]
     loser_loss = -loser.profit
     spread = symbol_info.get('spread', 0) * symbol_info.get('point', 0.00001)
@@ -393,7 +355,6 @@ def simulate_candidate_execution(losers: List[PositionInfo], winners: List[Posit
         remaining = w.volume - close_vol
         close_type = "full" if remaining <= EPS else "partial"
 
-        # Hedge preservation: active flip ticket
         if w.ticket == active_flip_ticket:
             if close_type == "partial" and 0 < remaining < config.min_residual_volume - EPS:
                 close_type = "full"
@@ -410,36 +371,6 @@ def simulate_candidate_execution(losers: List[PositionInfo], winners: List[Posit
     net_profit = realised - loser_loss
     return realised, required_profit, net_profit, winner_actions, True
 
-def compute_basket_target_price(positions: List[PositionInfo], direction_is_buy: bool,
-                                symbol_info: Dict, one_r: float) -> Tuple[float, float]:
-    """Replicate ComputeBasketTargetPrice() – used as fallback only."""
-    if not positions:
-        return 0.0, 0.0
-    total_lots = 0.0
-    cost = 0.0
-    total_profit = 0.0
-    for p in positions:
-        total_lots += p.volume
-        cost += p.entry * p.volume
-        total_profit += p.profit
-    if total_lots <= EPS:
-        return 0.0, 0.0
-    avg_entry = cost / total_lots
-    target_profit = one_r * 0.5
-    required_total = target_profit - total_profit
-    tick_value = symbol_info.get('tick_value', 1.0)
-    tick_size = symbol_info.get('tick_size', symbol_info.get('point', 0.00001))
-    price_move = (required_total * tick_size) / (tick_value * total_lots)
-    if price_move < 0:
-        price_move = 0.0
-    if direction_is_buy:
-        target_price = avg_entry + price_move
-    else:
-        target_price = avg_entry - price_move
-    price_diff = (target_price - avg_entry) if direction_is_buy else (avg_entry - target_price)
-    final_profit = total_profit + (price_diff / tick_size) * tick_value * total_lots
-    return target_price, final_profit
-
 def get_best_pairing_decision(positions: List[PositionInfo],
                               direction_locked: bool,
                               current_direction_is_buy: bool,
@@ -452,10 +383,6 @@ def get_best_pairing_decision(positions: List[PositionInfo],
                               equity: float = 0.0,
                               protected_floor: float = 0.0,
                               initial_equity: float = 0.0) -> Optional[PairingDecision]:
-    """
-    Main entry point. Returns None if no pairing should be executed.
-    Enforces pressure gating and dynamic execution threshold.
-    """
     if not config.enable_pairing_engine:
         return None
     if not direction_locked:
@@ -469,7 +396,6 @@ def get_best_pairing_decision(positions: List[PositionInfo],
     if not losers or not winners:
         return None
 
-    # ========== 1. Compute basket health with pressure ==========
     current_price = symbol_info.get('ask', 0.0) if current_direction_is_buy else symbol_info.get('bid', 0.0)
     margin = symbol_info.get('margin', 0.0)
     free_margin = symbol_info.get('free_margin', 10000.0)
@@ -477,12 +403,11 @@ def get_best_pairing_decision(positions: List[PositionInfo],
                             current_price, margin, free_margin,
                             equity, protected_floor, initial_equity)
 
-    # ========== 2. Pressure gating ==========
+    # Pressure gating: do not pair at all if basket is healthy (pressure < 0.35)
     if before.pressure_score < 0.35:
-        # Basket healthy – no pairing allowed
         return None
 
-    # ========== 3. Dynamic execution threshold based on pressure ==========
+    # Dynamic threshold based on pressure
     if before.pressure_score < 0.4:
         dynamic_threshold = 2.0
     elif before.pressure_score < 0.7:
@@ -494,7 +419,6 @@ def get_best_pairing_decision(positions: List[PositionInfo],
     if not candidates:
         return None
 
-    # Immediate candidate with net_ratio >= dynamic_threshold – pick highest ratio
     immediate = None
     best_ratio = -1.0
     for c in candidates:
@@ -505,17 +429,11 @@ def get_best_pairing_decision(positions: List[PositionInfo],
         best = immediate
     else:
         score_candidates(candidates, losers, winners, config.min_residual_volume)
-        # Deterministic tie‑breaker: score, net_ratio, volume_released
-        best = max(
-            candidates,
-            key=lambda x: (x.score, x.net_ratio, x.volume_released)
-        )
+        best = max(candidates, key=lambda x: (x.score, x.net_ratio, x.volume_released))
 
-    # Final threshold check using dynamic threshold
     if best.net_ratio < dynamic_threshold - EPS:
         return None
 
-    # ========== 4. Simulation ==========
     one_r = one_r_value(symbol_info, symbol_info.get('min_entry_spacing_percent', 0.1),
                         symbol_info.get('fixed_lot_size', 0.02))
     realised, required_profit, net_profit, winner_actions, exec_ok = simulate_candidate_execution(
@@ -525,7 +443,7 @@ def get_best_pairing_decision(positions: List[PositionInfo],
     if not exec_ok or not winner_actions:
         return None
 
-    # ========== 5. Simulate remaining basket after pairing ==========
+    # Simulate remaining basket
     loser_ticket = losers[best.loser_idx].ticket
     remaining = []
     for p in positions:
@@ -540,7 +458,7 @@ def get_best_pairing_decision(positions: List[PositionInfo],
                 if new_vol > EPS:
                     remaining.append(PositionInfo(
                         ticket=p.ticket,
-                        profit=p.profit * (new_vol / p.volume),  # approximation
+                        profit=p.profit * (new_vol / p.volume),
                         volume=new_vol, entry=p.entry, is_buy=p.is_buy
                     ))
         else:
