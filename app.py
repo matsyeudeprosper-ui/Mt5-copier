@@ -16,7 +16,8 @@ from risk_engine import calculate_dynamic_lot_size, can_add_position
 from pairing_engine import get_best_pairing_decision, PairingConfig, PairingEngineState
 from supabase import create_client, Client
 from entry_engine import get_entry_decision
-from entry_models import EntryDecisionRequest
+from entry_models import EntryDecisionRequest, PositionInfo
+from dataclasses import asdict
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -285,7 +286,6 @@ def pairing_decision():
     try:
         from models import PairingConfig, PairingEngineState, PositionInfo
         from pairing_engine import get_best_pairing_decision as engine_decision
-        from dataclasses import asdict
 
         cfg = data.get("config", {})
         config = PairingConfig(**{k: cfg.get(k) for k in PairingConfig.__dataclass_fields__.keys()})
@@ -348,9 +348,14 @@ def entry_decision():
         return jsonify({"error": "Missing JSON"}), 400
 
     try:
+        # Convert positions from dicts to PositionInfo objects
+        if "positions" in data:
+            positions_data = data["positions"]
+            data["positions"] = [PositionInfo(**p) for p in positions_data]
+
         req = EntryDecisionRequest(**data)
         resp = get_entry_decision(req)
-        return jsonify(resp.dict()), 200
+        return jsonify(asdict(resp)), 200
     except Exception as e:
         logger.error(f"Entry decision error: {e}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
