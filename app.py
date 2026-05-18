@@ -19,6 +19,9 @@ from entry_engine import get_entry_decision
 from entry_models import EntryDecisionRequest, PositionInfo
 from dataclasses import asdict
 
+# New import for layered architecture
+from strategy_router import route_strategy
+
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "change_me_admin")
@@ -262,7 +265,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- PAIRING DECISION ENDPOINT ----------
+# ---------- PAIRING DECISION ENDPOINT (UPDATED with strategy router) ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()
@@ -273,7 +276,7 @@ def pairing_decision():
     if not request_id:
         return jsonify({"error": "Missing request_id"}), 400
 
-    # Idempotency cache
+    # Idempotency
     if request_id in processed_requests:
         cached = processed_requests[request_id]
         if datetime.now() < cached["expires_at"]:
@@ -285,7 +288,6 @@ def pairing_decision():
 
     try:
         from models import PairingConfig, PairingEngineState, PositionInfo
-        from pairing_engine import get_best_pairing_decision as engine_decision
 
         cfg = data.get("config", {})
         config = PairingConfig(**{k: cfg.get(k) for k in PairingConfig.__dataclass_fields__.keys()})
@@ -310,13 +312,21 @@ def pairing_decision():
         atr_h4 = data.get("atr_h4", 0.001)
         active_flip_ticket = data.get("active_flip_ticket", None)
 
-        # +++ FIX: extract account_info and pass to engine +++
         account_info = data.get("account_info", {})
         equity = account_info.get("equity", 0.0)
         protected_floor = account_info.get("protected_floor", 0.0)
         initial_equity = account_info.get("initial_equity", 0.0)
+        mor = account_info.get("mor", 0.0)
+        account = account_info.get("account", 0)   # MT5 account login number
 
-        decision = engine_decision(
+        # User profile (can be extended from license data later)
+        user_profile = {
+            "anygain_aggressiveness": 1.0,
+            "pairing_aggressiveness": 1.0,
+            "account": account
+        }
+
+        decision = route_strategy(
             positions=positions,
             direction_locked=direction_locked,
             current_direction_is_buy=current_direction_is_buy,
@@ -328,7 +338,9 @@ def pairing_decision():
             active_flip_ticket=active_flip_ticket,
             equity=equity,
             protected_floor=protected_floor,
-            initial_equity=initial_equity
+            initial_equity=initial_equity,
+            mor=mor,
+            user_profile=user_profile
         )
 
         expires_at = int(time.time()) + 5
@@ -349,7 +361,7 @@ def pairing_decision():
     except Exception as e:
         logger.error(f"Pairing decision error: {e}\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
-        
+
 # ---------- ENTRY / ADDITION DECISION ENDPOINT ----------
 @app.route("/entry-decision", methods=["POST"])
 def entry_decision():
