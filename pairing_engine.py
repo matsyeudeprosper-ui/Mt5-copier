@@ -10,7 +10,7 @@ PAIRING ENGINE MODE:
 
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from models import (
     PositionInfo, Candidate, BasketHealth, WinnerAction,
     PairingDecision, PairingConfig, PairingEngineState
@@ -371,18 +371,27 @@ def simulate_candidate_execution(losers: List[PositionInfo], winners: List[Posit
     net_profit = realised - loser_loss
     return realised, required_profit, net_profit, winner_actions, True
 
-def get_best_pairing_decision(positions: List[PositionInfo],
-                              direction_locked: bool,
-                              current_direction_is_buy: bool,
-                              symbol_info: Dict,
-                              config: PairingConfig,
-                              state: PairingEngineState,
-                              current_time: int,
-                              atr_h4: float,
-                              active_flip_ticket: Optional[int] = None,
-                              equity: float = 0.0,
-                              protected_floor: float = 0.0,
-                              initial_equity: float = 0.0) -> Optional[PairingDecision]:
+# ======================================================================
+# MAIN DECISION FUNCTION – returns None if no pairing should happen
+# ======================================================================
+def get_best_pairing_decision(
+    positions: List[PositionInfo],
+    direction_locked: bool,
+    current_direction_is_buy: bool,
+    symbol_info: Dict,
+    config: PairingConfig,
+    state: PairingEngineState,
+    current_time: int,
+    atr_h4: float,
+    active_flip_ticket: Optional[int] = None,
+    equity: float = 0.0,
+    protected_floor: float = 0.0,
+    initial_equity: float = 0.0
+) -> Optional[PairingDecision]:
+
+    # ---------------------------------------------------------
+    # PRECHECKS
+    # ---------------------------------------------------------
     if not config.enable_pairing_engine:
         return None
     if not direction_locked:
@@ -396,18 +405,34 @@ def get_best_pairing_decision(positions: List[PositionInfo],
     if not losers or not winners:
         return None
 
+    # ---------------------------------------------------------
+    # BASKET ANALYSIS
+    # ---------------------------------------------------------
     current_price = symbol_info.get('ask', 0.0) if current_direction_is_buy else symbol_info.get('bid', 0.0)
     margin = symbol_info.get('margin', 0.0)
     free_margin = symbol_info.get('free_margin', 10000.0)
-    before = analyze_basket(positions, direction_locked, current_direction_is_buy,
-                            current_price, margin, free_margin,
-                            equity, protected_floor, initial_equity)
 
-    # Pressure gating: do not pair at all if basket is healthy (pressure < 0.35)
+    before = analyze_basket(
+        positions,
+        direction_locked,
+        current_direction_is_buy,
+        current_price,
+        margin,
+        free_margin,
+        equity,
+        protected_floor,
+        initial_equity
+    )
+
+    # ---------------------------------------------------------
+    # PRESSURE GATING (healthy basket → no pairing)
+    # ---------------------------------------------------------
     if before.pressure_score < 0.35:
         return None
 
-    # Dynamic threshold based on pressure
+    # ---------------------------------------------------------
+    # DYNAMIC THRESHOLD based on stress level
+    # ---------------------------------------------------------
     if before.pressure_score < 0.4:
         dynamic_threshold = 2.0
     elif before.pressure_score < 0.7:
@@ -415,16 +440,21 @@ def get_best_pairing_decision(positions: List[PositionInfo],
     else:
         dynamic_threshold = 1.1
 
+    # ---------------------------------------------------------
+    # GENERATE AND SELECT CANDIDATE
+    # ---------------------------------------------------------
     candidates = generate_candidates(losers, winners)
     if not candidates:
         return None
 
+    # Immediate candidate if net_ratio meets dynamic_threshold
     immediate = None
     best_ratio = -1.0
     for c in candidates:
         if c.net_ratio >= dynamic_threshold - EPS and c.net_ratio > best_ratio:
             best_ratio = c.net_ratio
             immediate = c
+
     if immediate:
         best = immediate
     else:
@@ -434,16 +464,26 @@ def get_best_pairing_decision(positions: List[PositionInfo],
     if best.net_ratio < dynamic_threshold - EPS:
         return None
 
-    one_r = one_r_value(symbol_info, symbol_info.get('min_entry_spacing_percent', 0.1),
-                        symbol_info.get('fixed_lot_size', 0.02))
+    # ---------------------------------------------------------
+    # SIMULATE EXECUTION
+    # ---------------------------------------------------------
+    one_r = one_r_value(
+        symbol_info,
+        symbol_info.get('min_entry_spacing_percent', 0.1),
+        symbol_info.get('fixed_lot_size', 0.02)
+    )
+
     realised, required_profit, net_profit, winner_actions, exec_ok = simulate_candidate_execution(
         losers, winners, best, config, symbol_info, one_r,
         symbol_info.get('fixed_lot_size', 0.02), active_flip_ticket
     )
+
     if not exec_ok or not winner_actions:
         return None
 
-    # Simulate remaining basket
+    # ---------------------------------------------------------
+    # SIMULATE REMAINING BASKET AFTER PARTIAL CLOSES
+    # ---------------------------------------------------------
     loser_ticket = losers[best.loser_idx].ticket
     remaining = []
     for p in positions:
@@ -463,23 +503,44 @@ def get_best_pairing_decision(positions: List[PositionInfo],
                     ))
         else:
             remaining.append(p)
-    after = analyze_basket(remaining, direction_locked, current_direction_is_buy,
-                           current_price, margin, free_margin,
-                           equity, protected_floor, initial_equity)
 
+    after = analyze_basket(
+        remaining,
+        direction_locked,
+        current_direction_is_buy,
+        current_price,
+        margin,
+        free_margin,
+        equity,
+        protected_floor,
+        initial_equity
+    )
+
+    # ---------------------------------------------------------
+    # IMPROVEMENT CHECK
+    # ---------------------------------------------------------
     if not would_remaining_basket_improve(before, after, best, losers, winners):
         return None
 
+    # ---------------------------------------------------------
+    # FUTURE SAFETY CHECK
+    # ---------------------------------------------------------
     if not future_safety_check(losers, winners, best, winner_actions,
                                config, atr_h4, current_price, current_direction_is_buy):
         return None
 
+    # ---------------------------------------------------------
+    # REQUIRED PRICE FOR LIMIT ORDER (if needed)
+    # ---------------------------------------------------------
     required_price = compute_required_price_for_candidate(losers, winners, best,
                                                           current_direction_is_buy,
                                                           symbol_info,
                                                           dynamic_threshold)
 
-    decision = PairingDecision(
+    # ---------------------------------------------------------
+    # SUCCESS – RETURN EXECUTABLE DECISION
+    # ---------------------------------------------------------
+    return PairingDecision(
         execute_now=True,
         reason="ok",
         loser_ticket=loser_ticket,
@@ -493,4 +554,3 @@ def get_best_pairing_decision(positions: List[PositionInfo],
         basket_health_before=asdict(before),
         basket_health_after=asdict(after)
     )
-    return decision
