@@ -535,10 +535,11 @@ def list_licenses():
         return jsonify({"error": "Database error"}), 500
 
 # ---------- PUBLIC REPORT ENDPOINTS (NEW) ----------
+# Replace the existing /api/stats route with this:
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
     """Return aggregated trading statistics for public report."""
-    stats = get_public_stats()
+    stats = get_public_stats(supabase)   # pass the global supabase client
     if "error" in stats:
         return jsonify({"error": stats["error"]}), 500
     return jsonify(stats), 200

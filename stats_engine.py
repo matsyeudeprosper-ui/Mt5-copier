@@ -4,35 +4,20 @@ Aggregates trade data from Supabase and returns metrics.
 """
 
 import logging
-from supabase import create_client
-import os
 
 logger = logging.getLogger(__name__)
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("Supabase client initialized in stats_engine")
-    except Exception as e:
-        logger.error(f"Supabase initialization failed: {e}")
-
-def get_public_stats():
-    """Return aggregated trading statistics for public report."""
-    if not supabase:
-        return {"error": "Supabase not available"}
+def get_public_stats(supabase_client):
+    """Return aggregated trading statistics for public report using the provided Supabase client."""
+    if not supabase_client:
+        return {"error": "Supabase client not available"}
 
     try:
-        # Fetch all trades, optionally excluding master license trades
-        # For simplicity, we fetch all trades; if you want to exclude master, you can filter later.
-        # We'll assume master licenses have a specific flag or we skip by license_key.
-        # To exclude master, we need to know master license keys.
-        master_licenses = supabase.table('licenses').select('license_key').eq('is_master', True).execute()
+        # Exclude master licenses
+        master_licenses = supabase_client.table('licenses').select('license_key').eq('is_master', True).execute()
         master_keys = [row['license_key'] for row in master_licenses.data] if master_licenses.data else []
         # Fetch all trades
-        trades_data = supabase.table('trades').select('profit, equity_before, equity_after, closed_at, license_key').execute()
+        trades_data = supabase_client.table('trades').select('profit, equity_before, equity_after, closed_at, license_key').execute()
         trades = trades_data.data
         # Filter out master trades
         if master_keys:
@@ -57,7 +42,7 @@ def get_public_stats():
     avg_win = gross_profit / len(wins) if wins else 0
     avg_loss = gross_loss / len(losses) if losses else 0
 
-    # Compute equity curve and max drawdown
+    # Equity curve & max drawdown
     equity_curve = []
     equity = 0
     for t in trades:
@@ -88,9 +73,9 @@ def get_public_stats():
     growth = (total_profit / start_equity * 100) if start_equity > 0 else 0
     recovery_factor = total_profit / max_drawdown if max_drawdown > 0 else 0
 
-    # Prepare data for chart (dates and cumulative profit)
+    # Prepare chart data
     trades_sorted = sorted(trades, key=lambda x: x['closed_at'])
-    dates = [t['closed_at'][:10] for t in trades_sorted]  # YYYY-MM-DD
+    dates = [t['closed_at'][:10] for t in trades_sorted]
     cumulative = []
     cum = 0
     for t in trades_sorted:
