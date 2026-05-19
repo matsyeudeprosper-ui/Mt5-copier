@@ -2,13 +2,13 @@
 Recovery Exit Engine (ARBE) – Adaptive Recovery Basket Exit.
 Closes the entire basket when equity recovers above starting equity
 by an adaptive percentage based on pressure score.
-Runs before AnyGain and Pairing.
+Now works for ANY basket with >=2 positions, regardless of stress history.
 """
 
 from typing import List, Optional, Dict
 from dataclasses import asdict
 from models import PositionInfo, WinnerAction, PairingDecision, BasketHealth
-from pairing_engine import analyze_basket, EPS
+from pairing_engine import EPS
 
 def get_recovery_exit_decision(
     positions: List[PositionInfo],
@@ -26,8 +26,9 @@ def get_recovery_exit_decision(
 ) -> Optional[PairingDecision]:
     """
     Returns a PairingDecision to close all positions if the basket
-    has recovered from stress to a profit above starting equity,
+    has recovered to a profit above starting equity,
     with adaptive threshold based on pressure_score.
+    No pressure gate – works for any basket with >=2 positions.
     """
     if not direction_locked:
         return None
@@ -35,10 +36,8 @@ def get_recovery_exit_decision(
         return None
     if basket_start_equity <= 0:
         return None
-    if pressure_score < 0.35:
-        return None   # not stressed enough to be in recovery mode
 
-    # Adaptive target based on pressure score
+    # Adaptive target based on pressure score (still use it for scaling, but no gate)
     if pressure_score < 0.5:
         target_percent = 0.20
     elif pressure_score < 0.7:
@@ -61,8 +60,6 @@ def get_recovery_exit_decision(
     # Build winner_actions: close all positions fully
     winner_actions = []
     for p in positions:
-        # All positions are treated as "winners" for closing (even if in loss)
-        # The EA will execute market close orders.
         winner_actions.append(WinnerAction(
             ticket=p.ticket,
             close_type="full",
@@ -70,14 +67,14 @@ def get_recovery_exit_decision(
             expected_profit=p.profit
         ))
 
-    # Create a dummy basket health (for logging, not used by EA for execution)
+    # Create dummy basket health (for logging, not used by EA for execution)
     before = BasketHealth()
     after = BasketHealth()
 
     return PairingDecision(
         execute_now=True,
         reason=f"recovery_exit_pressure_{pressure_score:.2f}_target_{target_percent:.2f}%",
-        loser_ticket=0,   # no single loser
+        loser_ticket=0,
         winner_actions=winner_actions,
         required_winner_profit=0.0,
         expected_net_profit=equity - basket_start_equity,

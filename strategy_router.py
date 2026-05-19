@@ -4,29 +4,14 @@ from models import PairingDecision, PairingConfig, PairingEngineState, PositionI
 from basket_analyzer import classify_basket_mode, BasketMode
 from anygain_engine import get_anygain_decision
 from pairing_engine import get_best_pairing_decision
-from recovery_exit_engine import get_recovery_exit_decision   # NEW
+from recovery_exit_engine import get_recovery_exit_decision
 
-def is_recovery_mode(
-    positions: List[PositionInfo],
-    equity: float,
-    protected_floor: float,
-    initial_equity: float,
-    margin_usage: float
-) -> bool:
+def is_recovery_mode(positions: List[PositionInfo]) -> bool:
     """
-    Strict gate: return True only if basket is stressed AND has at least 2 positions.
-    Single trades (even losing) are NEVER harvested.
+    Simplified gate: any basket with at least 2 positions is in recovery mode.
+    Single trades (even losing) are NOT harvested.
     """
-    if len(positions) < 2:
-        return False
-    floating_pnl = sum(p.profit for p in positions)
-    if floating_pnl < 0:
-        return True
-    if margin_usage > 0.70:
-        return True
-    if equity < protected_floor + (initial_equity * 0.005):
-        return True
-    return False
+    return len(positions) >= 2
 
 def route_strategy(
     positions: List[PositionInfo],
@@ -43,7 +28,7 @@ def route_strategy(
     initial_equity: float,
     mor: float,
     user_profile: Dict,
-    basket_start_equity: float = 0.0      # NEW parameter
+    basket_start_equity: float = 0.0
 ) -> Optional[PairingDecision]:
     
     if not positions:
@@ -54,8 +39,8 @@ def route_strategy(
     total_margin = margin + free_margin
     margin_usage = margin / total_margin if total_margin > 0 else 0.0
     
-    # Strict recovery gate
-    if not is_recovery_mode(positions, equity, protected_floor, initial_equity, margin_usage):
+    # Simplified recovery gate: only position count matters
+    if not is_recovery_mode(positions):
         return None
     
     # Compute current price and basket health (needed for pressure score)
