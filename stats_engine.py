@@ -1,8 +1,3 @@
-"""
-Statistics engine for public performance report.
-Aggregates trade data from Supabase and returns metrics.
-"""
-
 import logging
 
 logger = logging.getLogger(__name__)
@@ -88,7 +83,7 @@ def get_public_stats(supabase_client):
         "win_rate": round(win_rate, 1),
         "wins": len(wins),
         "losses": len(losses),
-        "profit_factor": round(profit_factor, 2),
+        "profit_factor": round(profit_factor, 2) if profit_factor != float('inf') else 999.99,
         "avg_win": round(avg_win, 2),
         "avg_loss": round(avg_loss, 2),
         "max_drawdown": round(max_drawdown, 2),
