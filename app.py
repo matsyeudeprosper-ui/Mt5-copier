@@ -21,6 +21,7 @@ from dataclasses import asdict
 
 # New import for layered architecture
 from strategy_router import route_strategy
+from notifications import send_basket_close_report   # <-- ADDED
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -265,7 +266,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- PAIRING DECISION ENDPOINT (UPDATED with strategy router + ARBE) ----------
+# ---------- PAIRING DECISION ENDPOINT (UPDATED with strategy router + ARBE + notifications) ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()
@@ -319,7 +320,7 @@ def pairing_decision():
         mor = account_info.get("mor", 0.0)
         account = account_info.get("account", 0)
 
-        # +++ NEW: basket_start_equity for ARBE +++
+        # basket_start_equity for ARBE
         basket_start_equity = account_info.get("basket_start_equity", 0.0)
 
         # User profile (can be extended from license data later)
@@ -344,8 +345,43 @@ def pairing_decision():
             initial_equity=initial_equity,
             mor=mor,
             user_profile=user_profile,
-            basket_start_equity=basket_start_equity   # +++ NEW +++
+            basket_start_equity=basket_start_equity
         )
+
+        # +++ NOTIFICATION: send report on full basket exit +++
+        if decision and decision.execute_now:
+            try:
+                # Calculate total volume of all positions
+                total_volume = sum(p.volume for p in positions)
+                closed_volume = sum(a.close_volume for a in decision.winner_actions)
+                if decision.loser_ticket != 0:
+                    for p in positions:
+                        if p.ticket == decision.loser_ticket:
+                            closed_volume += p.volume
+                            break
+                # If closed volume equals total volume (within epsilon), it's a full basket exit
+                if closed_volume >= total_volume - 1e-8:
+                    # Look up Telegram chat_id from Supabase using bound_account
+                    chat_id = None
+                    if supabase:
+                        try:
+                            result = supabase.table('licenses').select('telegram_chat_id').eq('bound_account', str(account)).eq('is_master', False).execute()
+                            if result.data:
+                                chat_id = result.data[0]['telegram_chat_id']
+                        except Exception as e:
+                            logger.error(f"Failed to find chat_id for account {account}: {e}")
+                    if chat_id:
+                        start_equity = basket_start_equity if basket_start_equity > 0 else equity - decision.expected_net_profit
+                        send_basket_close_report(
+                            chat_id=chat_id,
+                            start_equity=start_equity,
+                            final_equity=equity,
+                            total_profit=decision.expected_net_profit,
+                            num_trades=len(positions),
+                            symbol=symbol_info.get("symbol", "Unknown")
+                        )
+            except Exception as e:
+                logger.error(f"Failed to send basket close report: {e}")
 
         expires_at = int(time.time()) + 5
         response = {
@@ -472,7 +508,7 @@ def admin_disable_license():
                 return jsonify({"error": "License not found"}), 404
         else:
             licenses = load_licenses()
-            if license_key not in licenses:
+            if license_key in licenses:
                 return jsonify({"error": "License not found"}), 404
             licenses[license_key]["is_active"] = False
             licenses[license_key]["expires_at"] = datetime.now().isoformat()

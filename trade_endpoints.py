@@ -3,12 +3,24 @@ import json
 import logging
 from datetime import datetime
 from flask import Blueprint, request, jsonify
+from supabase import create_client
 import db
 from config import MESSAGES
-from notifications import send_validation_failure_notification
+from notifications import send_validation_failure_notification, send_trade_close_notification
 
 trade_bp = Blueprint('trade', __name__)
 logger = logging.getLogger(__name__)
+
+# Supabase client (reuse from app)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase client initialized in trade_endpoints")
+    except Exception as e:
+        logger.error(f"Supabase initialization failed: {e}")
 
 def is_license_valid(license_key, require_master=False, mt5_account=None):
     if license_key is None:
@@ -55,9 +67,42 @@ def receive_trade():
     magic = data.get("magic", "")
     timestamp = data.get("timestamp", datetime.now().isoformat())
 
+    # Store raw message in local DB (legacy)
     db.store_message(seq, action, symbol, magic, data, timestamp)
-    if action in ("open", "close"):
-        db.store_legacy_trade(action, data, timestamp)
+
+    # If it's a close, store trade in Supabase and send notification
+    if action == "close" and supabase:
+        try:
+            profit = data.get("profit", 0.0)
+            equity_before = data.get("equity_before")
+            equity_after = data.get("equity_after")
+            trade_type = data.get("trade_type", "single")  # 'single' or 'basket'
+            num_positions = data.get("num_positions", 1)
+            reason = data.get("reason", "normal_close")
+
+            # Get license key from header (same as used for auth)
+            lic_result = supabase.table('licenses').select('telegram_chat_id').eq('license_key', license_key).execute()
+            chat_id = lic_result.data[0]['telegram_chat_id'] if lic_result.data else None
+
+            # Insert trade record
+            supabase.table('trades').insert({
+                "license_key": license_key,
+                "symbol": symbol,
+                "closed_at": datetime.now().isoformat(),
+                "profit": profit,
+                "equity_before": equity_before,
+                "equity_after": equity_after,
+                "trade_type": trade_type,
+                "num_positions": num_positions,
+                "reason": reason
+            }).execute()
+            logger.info(f"Trade stored in Supabase: {symbol} profit={profit}")
+
+            # Send Telegram notification
+            if chat_id:
+                send_trade_close_notification(chat_id, symbol, profit, trade_type, num_positions)
+        except Exception as e:
+            logger.error(f"Failed to store trade in Supabase: {e}")
 
     return jsonify({"status": "ok", "seq": seq}), 200
 

@@ -28,6 +28,53 @@ from supabase import create_client, Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 logger.info("Supabase client initialized for bot")
 
+# ========== Supabase user settings helpers ==========
+def get_user_settings(chat_id):
+    """Get user settings from Supabase, create default if not exists."""
+    if not supabase:
+        return {"auto_report_enabled": False, "report_frequency": "daily", "report_hour": 9,
+                "trial_used": False, "hard_stop_hit": False, "pip_value": None,
+                "base_currency": "USD", "effective_start": 0}
+    try:
+        res = supabase.table('user_settings').select('*').eq('telegram_chat_id', str(chat_id)).execute()
+        if res.data:
+            return res.data[0]
+        else:
+            # Create default settings
+            default = {
+                "telegram_chat_id": str(chat_id),
+                "auto_report_enabled": False,
+                "report_frequency": "daily",
+                "report_hour": 9,
+                "base_currency": "USD",
+                "pip_value": None,
+                "effective_start": 0,
+                "trial_used": False,
+                "hard_stop_hit": False
+            }
+            supabase.table('user_settings').insert(default).execute()
+            return default
+    except Exception as e:
+        logger.error(f"get_user_settings error: {e}")
+        return {"auto_report_enabled": False, "report_frequency": "daily", "report_hour": 9,
+                "trial_used": False, "hard_stop_hit": False}
+
+def set_user_settings(chat_id, **kwargs):
+    """Update user settings in Supabase."""
+    if not supabase:
+        return
+    try:
+        supabase.table('user_settings').update(kwargs).eq('telegram_chat_id', str(chat_id)).execute()
+    except Exception as e:
+        logger.error(f"set_user_settings error: {e}")
+
+def mark_trial_used(chat_id):
+    set_user_settings(chat_id, trial_used=True)
+
+def set_hard_stop(chat_id, value):
+    set_user_settings(chat_id, hard_stop_hit=value)
+
+# ========== Telegram bot core functions ==========
 def set_bot_token(token):
     global TELEGRAM_BOT_TOKEN
     TELEGRAM_BOT_TOKEN = token
@@ -59,7 +106,7 @@ def get_user_license(chat_id):
         return None
 
 def get_main_menu_markup(chat_id, lang):
-    settings = db.get_user_settings(chat_id)
+    settings = get_user_settings(chat_id)
     has_license = get_user_license(chat_id) is not None
     show_trial = (not has_license) and (not settings["trial_used"])
     buttons = []
@@ -95,7 +142,7 @@ def check_license_status(chat_id, lang):
     expiry_str = expires_at if expires_at else MESSAGES["never"][lang]
     bound_str = bound_account if bound_account else MESSAGES["not_bound"][lang]
     trial_str = " (Trial)" if is_trial else ""
-    settings = db.get_user_settings(chat_id)
+    settings = get_user_settings(chat_id)
     hard_stop_str = "Yes" if settings["hard_stop_hit"] else "No"
     msg = MESSAGES["license_status"][lang].format(key=license_key, bound=bound_str, expires=expiry_str, hard_stop=hard_stop_str) + trial_str
     send_telegram(chat_id, msg)
@@ -122,7 +169,7 @@ def handle_trial(chat_id, lang):
     if get_user_license(chat_id) is not None:
         send_telegram(chat_id, MESSAGES["trial_already_exists"][lang])
         return
-    settings = db.get_user_settings(chat_id)
+    settings = get_user_settings(chat_id)
     if settings["trial_used"]:
         send_telegram(chat_id, MESSAGES["trial_not_available"][lang])
         return
@@ -131,7 +178,7 @@ def handle_trial(chat_id, lang):
         send_telegram(chat_id, "Error creating trial license. Please try later.")
         return
     expiry_str = expires_at if expires_at else "7 days"
-    db.mark_trial_used(chat_id)
+    mark_trial_used(chat_id)
     msg = MESSAGES["trial_success"][lang].format(key=license_key, expires=expiry_str)
     send_telegram(chat_id, msg)
     notify_admin(f"🧪 New trial license\nUser: {chat_id}\nKey: {license_key}\nExpires: {expiry_str}")
@@ -141,11 +188,11 @@ def handle_resume(chat_id, lang):
     if not lic:
         send_telegram(chat_id, MESSAGES["resume_not_needed"][lang])
         return
-    settings = db.get_user_settings(chat_id)
+    settings = get_user_settings(chat_id)
     if not settings["hard_stop_hit"]:
         send_telegram(chat_id, MESSAGES["no_hard_stop"][lang])
         return
-    db.set_hard_stop(chat_id, False)
+    set_hard_stop(chat_id, False)
     send_telegram(chat_id, MESSAGES["resume_success"][lang])
 
 def show_report_menu(chat_id, lang):
@@ -160,7 +207,7 @@ def show_report_menu(chat_id, lang):
     send_telegram(chat_id, MESSAGES["report_menu_title"][lang], reply_markup)
 
 def show_settings_menu(chat_id, lang):
-    settings = db.get_user_settings(chat_id)
+    settings = get_user_settings(chat_id)
     freq_display = MESSAGES["current_frequency"][lang].format(freq=settings["report_frequency"].capitalize())
     hour = settings["report_hour"]
     reply_markup = {
@@ -176,9 +223,9 @@ def show_settings_menu(chat_id, lang):
     send_telegram(chat_id, menu_text, reply_markup)
 
 def toggle_auto_report(chat_id, lang):
-    settings = db.get_user_settings(chat_id)
+    settings = get_user_settings(chat_id)
     new_state = not settings["auto_report_enabled"]
-    db.set_user_settings(chat_id, auto_report_enabled=1 if new_state else 0)
+    set_user_settings(chat_id, auto_report_enabled=new_state)
     if new_state:
         send_telegram(chat_id, MESSAGES["auto_report_notify_on"][lang].format(hour=settings["report_hour"]))
     else:
@@ -186,75 +233,87 @@ def toggle_auto_report(chat_id, lang):
     show_settings_menu(chat_id, lang)
 
 def handle_report(chat_id, period, lang):
-    if not get_user_license(chat_id):
+    # Find license_key for this chat_id
+    if not supabase:
+        send_telegram(chat_id, "Reporting service unavailable.")
+        return
+    res = supabase.table('licenses').select('license_key').eq('telegram_chat_id', str(chat_id)).eq('is_master', False).execute()
+    if not res.data:
         send_telegram(chat_id, MESSAGES["no_license"][lang])
         return
-    purchase_date = reporting.get_license_purchase_date(str(chat_id))
-    if not purchase_date:
-        send_telegram(chat_id, MESSAGES["no_license"][lang])
-        return
-    trades = reporting.get_trades_from_date(purchase_date)
+    license_key = res.data[0]['license_key']
+    
+    # Determine date range
     now = datetime.now()
     if period == "daily":
         cutoff = now - timedelta(days=1)
-        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
     elif period == "weekly":
         cutoff = now - timedelta(days=7)
-        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
     elif period == "monthly":
         cutoff = now - timedelta(days=30)
-        trades = [t for t in trades if datetime.fromisoformat(t[12]) >= cutoff]
-    elif period == "alltime":
-        trades = trades
-    else:
-        send_telegram(chat_id, "Invalid period.")
-        return
-
-    settings = db.get_user_settings(chat_id)
-    pip_value = settings["pip_value"]
-    pip_currency = settings["pip_currency"] or "USD"
-    stats = reporting.calculate_stats(trades, pip_value=pip_value)
-    if not stats:
+    else:  # alltime
+        cutoff = datetime(1970, 1, 1)
+    
+    # Query trades
+    query = supabase.table('trades').select('profit, equity_before, equity_after').eq('license_key', license_key).gte('closed_at', cutoff.isoformat()).execute()
+    trades = query.data
+    if not trades:
         send_telegram(chat_id, MESSAGES["report_no_trades"][lang])
         return
-
-    start_balance = settings["effective_start"] if settings["effective_start"] > 0 else None
-
-    msg = MESSAGES[f"report_{period}"][lang] + "\n\n"
-    if pip_value is not None:
-        net_profit_str = f"{stats['net_profit']:.2f} {pip_currency}"
-        avg_win_str = f"{stats['avg_win']:.2f} {pip_currency}"
-        avg_loss_str = f"{stats['avg_loss']:.2f} {pip_currency}"
-        max_dd_str = f"{stats['max_drawdown']:.2f} {pip_currency}"
-        currency_symbol = pip_currency
-    else:
-        net_profit_str = f"{stats['net_profit']:.2f} pips"
-        avg_win_str = f"{stats['avg_win']:.2f} pips"
-        avg_loss_str = f"{stats['avg_loss']:.2f} pips"
-        max_dd_str = f"{stats['max_drawdown']:.2f} pips"
-        currency_symbol = "pips"
-
-    msg += MESSAGES["report_trades"][lang].format(
-        total=stats['total_trades'],
-        win_rate=stats['win_rate'],
-        wins=stats['wins'],
-        losses=stats['losses'],
-        profit_factor=stats['profit_factor'],
-        net_profit=net_profit_str,
-        currency=currency_symbol,
-        avg_win=avg_win_str,
-        avg_loss=avg_loss_str,
-        max_drawdown=max_dd_str
-    )
-    if start_balance is not None and start_balance > 0 and pip_value is not None:
-        final_balance = start_balance + stats['net_profit']
-        growth = (stats['net_profit'] / start_balance) * 100
-        msg += "\n\n" + MESSAGES["report_equity"][lang].format(
-            start=round(start_balance, 2),
-            final=round(final_balance, 2),
-            growth=round(growth, 2),
-            currency=currency_symbol
-        )
+    
+    # Compute metrics
+    profits = [t['profit'] for t in trades]
+    total_profit = sum(profits)
+    num_trades = len(trades)
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p < 0]
+    win_rate = (len(wins) / num_trades * 100) if num_trades > 0 else 0
+    gross_profit = sum(wins) if wins else 0
+    gross_loss = abs(sum(losses)) if losses else 0
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+    avg_win = gross_profit / len(wins) if wins else 0
+    avg_loss = gross_loss / len(losses) if losses else 0
+    max_drawdown = 0
+    # Compute cumulative equity (using equity_after when available, else rolling profit)
+    equity_curve = []
+    equity = 0
+    for t in trades:
+        if t.get('equity_before') is not None:
+            equity = t['equity_after']
+        else:
+            equity += t['profit']
+        equity_curve.append(equity)
+    if equity_curve:
+        peak = equity_curve[0]
+        for val in equity_curve:
+            if val > peak:
+                peak = val
+            drawdown = peak - val
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+    # Equity growth (use first equity_before if available)
+    start_equity = None
+    for t in trades:
+        if t.get('equity_before') is not None:
+            start_equity = t['equity_before']
+            break
+    if start_equity is None:
+        start_equity = 0
+    end_equity = start_equity + total_profit
+    growth = (total_profit / start_equity * 100) if start_equity > 0 else 0
+    recovery_factor = total_profit / max_drawdown if max_drawdown > 0 else 0
+    
+    # Build message
+    msg = f"📊 {period.capitalize()} Report\n"
+    msg += f"Trades: {num_trades}\n"
+    msg += f"Win Rate: {win_rate:.1f}% ({len(wins)} wins, {len(losses)} losses)\n"
+    msg += f"Net Profit: {total_profit:.2f}\n"
+    msg += f"Profit Factor: {profit_factor:.2f}\n"
+    msg += f"Avg Win: {avg_win:.2f} | Avg Loss: {avg_loss:.2f}\n"
+    msg += f"Max Drawdown: {max_drawdown:.2f}\n"
+    msg += f"Recovery Factor: {recovery_factor:.2f}\n"
+    msg += f"Equity Growth: {growth:.1f}% (from {start_equity:.2f} to {end_equity:.2f})"
+    
     send_telegram(chat_id, msg)
 
 def create_payment_invoice(chat_id, plan_id, lang):
@@ -395,7 +454,7 @@ def telegram_webhook():
                 try:
                     hour = int(parts[1])
                     if 0 <= hour <= 23:
-                        db.set_user_settings(chat_id, report_hour=hour)
+                        set_user_settings(chat_id, report_hour=hour)
                         send_telegram(chat_id, MESSAGES["set_hour_success"][lang].format(hour=hour))
                     else:
                         send_telegram(chat_id, MESSAGES["set_hour_invalid"][lang])
@@ -426,13 +485,13 @@ def telegram_webhook():
         elif data == "settings_auto_toggle":
             toggle_auto_report(chat_id, lang)
         elif data == "settings_freq_daily":
-            db.set_user_settings(chat_id, report_frequency='daily')
+            set_user_settings(chat_id, report_frequency='daily')
             show_settings_menu(chat_id, lang)
         elif data == "settings_freq_weekly":
-            db.set_user_settings(chat_id, report_frequency='weekly')
+            set_user_settings(chat_id, report_frequency='weekly')
             show_settings_menu(chat_id, lang)
         elif data == "settings_freq_monthly":
-            db.set_user_settings(chat_id, report_frequency='monthly')
+            set_user_settings(chat_id, report_frequency='monthly')
             show_settings_menu(chat_id, lang)
         elif data == "settings_hour":
             send_telegram(chat_id, MESSAGES["set_hour_prompt"][lang])
@@ -440,3 +499,17 @@ def telegram_webhook():
             send_telegram(chat_id, MESSAGES["invalid_option"][lang])
         answer_callback(query["id"])
     return "OK", 200
+
+# ========== Added for scheduler integration ==========
+def get_users_for_report():
+    if not supabase:
+        return []
+    try:
+        res = supabase.table('user_settings').select('telegram_chat_id, report_hour, report_frequency').eq('auto_report_enabled', True).execute()
+        return [(row['telegram_chat_id'], row['report_hour'], row['report_frequency']) for row in res.data]
+    except Exception as e:
+        logger.error(f"get_users_for_report error: {e}")
+        return []
+
+def send_report_to_user(chat_id, period, lang='en'):
+    handle_report(chat_id, period, lang)
