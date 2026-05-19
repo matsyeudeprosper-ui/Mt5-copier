@@ -265,7 +265,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- PAIRING DECISION ENDPOINT (UPDATED with strategy router) ----------
+# ---------- PAIRING DECISION ENDPOINT (UPDATED with strategy router + ARBE) ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()
@@ -317,7 +317,10 @@ def pairing_decision():
         protected_floor = account_info.get("protected_floor", 0.0)
         initial_equity = account_info.get("initial_equity", 0.0)
         mor = account_info.get("mor", 0.0)
-        account = account_info.get("account", 0)   # MT5 account login number
+        account = account_info.get("account", 0)
+
+        # +++ NEW: basket_start_equity for ARBE +++
+        basket_start_equity = account_info.get("basket_start_equity", 0.0)
 
         # User profile (can be extended from license data later)
         user_profile = {
@@ -340,7 +343,8 @@ def pairing_decision():
             protected_floor=protected_floor,
             initial_equity=initial_equity,
             mor=mor,
-            user_profile=user_profile
+            user_profile=user_profile,
+            basket_start_equity=basket_start_equity   # +++ NEW +++
         )
 
         expires_at = int(time.time()) + 5
