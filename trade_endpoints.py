@@ -79,14 +79,21 @@ def receive_trade():
             trade_type = data.get("trade_type", "single")  # 'single' or 'basket'
             num_positions = data.get("num_positions", 1)
             reason = data.get("reason", "normal_close")
+            user_license_key = data.get("user_license_key")  # from EA
 
-            # Get license key from header (same as used for auth)
-            lic_result = supabase.table('licenses').select('telegram_chat_id').eq('license_key', license_key).execute()
-            chat_id = lic_result.data[0]['telegram_chat_id'] if lic_result.data else None
+            # Get chat_id from user license key (if provided)
+            chat_id = None
+            if user_license_key:
+                try:
+                    lic_res = supabase.table('licenses').select('telegram_chat_id').eq('license_key', user_license_key).execute()
+                    if lic_res.data:
+                        chat_id = lic_res.data[0]['telegram_chat_id']
+                except Exception as e:
+                    logger.error(f"Failed to find chat_id for user license {user_license_key}: {e}")
 
             # Insert trade record
             supabase.table('trades').insert({
-                "license_key": license_key,
+                "license_key": user_license_key or license_key,
                 "symbol": symbol,
                 "closed_at": datetime.now().isoformat(),
                 "profit": profit,
@@ -162,8 +169,14 @@ def validate_license():
     lic = db.get_license_by_key(license_key)
     hard_stop_hit = False
     if lic and lic["chat_id"]:
-        settings = db.get_user_settings(lic["chat_id"])
-        hard_stop_hit = settings["hard_stop_hit"]
+        # We'll use the updated settings (soon to be migrated)
+        try:
+            if supabase:
+                res = supabase.table('user_settings').select('hard_stop_hit').eq('telegram_chat_id', lic["chat_id"]).execute()
+                if res.data and res.data[0].get('hard_stop_hit'):
+                    hard_stop_hit = res.data[0]['hard_stop_hit']
+        except:
+            pass
     return jsonify({"allowed": True, "expires_at": lic["expires_at"], "hard_stop_hit": hard_stop_hit, "message": "Valid"}), 200
 
 @trade_bp.route("/calibrate_pip", methods=["POST"])
@@ -185,9 +198,12 @@ def calibrate_pip():
         return jsonify({"error": "Invalid license key"}), 401
     chat_id = lic["chat_id"]
 
-    settings = db.get_user_settings(chat_id)
-    if settings["pip_value"] is not None:
-        return jsonify({"error": "Calibration already exists"}), 400
+    # Get current pip value from Supabase if available
+    pip_value = None
+    if supabase:
+        res = supabase.table('user_settings').select('pip_value').eq('telegram_chat_id', str(chat_id)).execute()
+        if res.data and res.data[0].get('pip_value'):
+            return jsonify({"error": "Calibration already exists"}), 400
 
     conn = db.get_conn()
     c = conn.cursor()
@@ -204,7 +220,12 @@ def calibrate_pip():
     if pip_value <= 0:
         return jsonify({"error": "Invalid pip value"}), 400
 
-    db.set_pip_calibration(chat_id, pip_value, currency)
+    # Store in Supabase
+    if supabase:
+        set_user_settings(chat_id, pip_value=pip_value, pip_currency=currency)
+    else:
+        db.set_pip_calibration(chat_id, pip_value, currency)
+
     from telegram_bot import send_telegram
     send_telegram(chat_id, MESSAGES["calibration_success"]["en"].format(currency=currency, pip_value=pip_value))
     return jsonify({"success": True, "pip_value": pip_value, "currency": currency}), 200
@@ -221,7 +242,18 @@ def report_hard_stop():
     if not lic:
         return jsonify({"error": "Invalid license key"}), 401
     chat_id = lic["chat_id"]
-    db.set_hard_stop(chat_id, True)
+    # Update Supabase
+    if supabase:
+        set_hard_stop(chat_id, True)
+    else:
+        db.set_hard_stop(chat_id, True)
     from telegram_bot import send_telegram
     send_telegram(chat_id, "⚠️ Your EA has hit the hard stop. Trading is paused. Use /resume to continue.")
     return jsonify({"success": True}), 200
+
+# Helper to update user settings (simple version; full version in telegram_bot)
+def set_user_settings(chat_id, **kwargs):
+    if supabase:
+        supabase.table('user_settings').update(kwargs).eq('telegram_chat_id', str(chat_id)).execute()
+def set_hard_stop(chat_id, value):
+    set_user_settings(chat_id, hard_stop_hit=value)
