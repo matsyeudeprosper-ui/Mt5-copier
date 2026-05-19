@@ -79,7 +79,7 @@ def receive_trade():
             trade_type = data.get("trade_type", "single")  # 'single' or 'basket'
             num_positions = data.get("num_positions", 1)
             reason = data.get("reason", "normal_close")
-            user_license_key = data.get("user_license_key")  # from EA
+            user_license_key = data.get("user_license_key")
 
             # Get chat_id from user license key (if provided)
             chat_id = None
@@ -105,8 +105,17 @@ def receive_trade():
             }).execute()
             logger.info(f"Trade stored in Supabase: {symbol} profit={profit}")
 
-            # Send Telegram notification
-            if chat_id:
+            # Check if user has enabled trade notifications
+            send_notification = True
+            if chat_id and supabase:
+                try:
+                    res = supabase.table('user_settings').select('trade_notifications_enabled').eq('telegram_chat_id', str(chat_id)).execute()
+                    if res.data and res.data[0].get('trade_notifications_enabled') == False:
+                        send_notification = False
+                except Exception as e:
+                    logger.error(f"Failed to fetch trade_notifications_enabled: {e}")
+
+            if chat_id and send_notification:
                 send_trade_close_notification(chat_id, symbol, profit, trade_type, num_positions)
         except Exception as e:
             logger.error(f"Failed to store trade in Supabase: {e}")
@@ -169,7 +178,6 @@ def validate_license():
     lic = db.get_license_by_key(license_key)
     hard_stop_hit = False
     if lic and lic["chat_id"]:
-        # We'll use the updated settings (soon to be migrated)
         try:
             if supabase:
                 res = supabase.table('user_settings').select('hard_stop_hit').eq('telegram_chat_id', lic["chat_id"]).execute()
@@ -222,7 +230,10 @@ def calibrate_pip():
 
     # Store in Supabase
     if supabase:
-        set_user_settings(chat_id, pip_value=pip_value, pip_currency=currency)
+        try:
+            supabase.table('user_settings').update({'pip_value': pip_value, 'pip_currency': currency}).eq('telegram_chat_id', str(chat_id)).execute()
+        except Exception as e:
+            logger.error(f"Failed to store pip calibration in Supabase: {e}")
     else:
         db.set_pip_calibration(chat_id, pip_value, currency)
 
@@ -244,16 +255,12 @@ def report_hard_stop():
     chat_id = lic["chat_id"]
     # Update Supabase
     if supabase:
-        set_hard_stop(chat_id, True)
+        try:
+            supabase.table('user_settings').update({'hard_stop_hit': True}).eq('telegram_chat_id', str(chat_id)).execute()
+        except Exception as e:
+            logger.error(f"Failed to update hard_stop_hit in Supabase: {e}")
     else:
         db.set_hard_stop(chat_id, True)
     from telegram_bot import send_telegram
     send_telegram(chat_id, "⚠️ Your EA has hit the hard stop. Trading is paused. Use /resume to continue.")
     return jsonify({"success": True}), 200
-
-# Helper to update user settings (simple version; full version in telegram_bot)
-def set_user_settings(chat_id, **kwargs):
-    if supabase:
-        supabase.table('user_settings').update(kwargs).eq('telegram_chat_id', str(chat_id)).execute()
-def set_hard_stop(chat_id, value):
-    set_user_settings(chat_id, hard_stop_hit=value)

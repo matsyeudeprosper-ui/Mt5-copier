@@ -34,7 +34,7 @@ def get_user_settings(chat_id):
     if not supabase:
         return {"auto_report_enabled": False, "report_frequency": "daily", "report_hour": 9,
                 "trial_used": False, "hard_stop_hit": False, "pip_value": None,
-                "base_currency": "USD", "effective_start": 0}
+                "base_currency": "USD", "effective_start": 0, "trade_notifications_enabled": True}
     try:
         res = supabase.table('user_settings').select('*').eq('telegram_chat_id', str(chat_id)).execute()
         if res.data:
@@ -50,14 +50,15 @@ def get_user_settings(chat_id):
                 "pip_value": None,
                 "effective_start": 0,
                 "trial_used": False,
-                "hard_stop_hit": False
+                "hard_stop_hit": False,
+                "trade_notifications_enabled": True
             }
             supabase.table('user_settings').insert(default).execute()
             return default
     except Exception as e:
         logger.error(f"get_user_settings error: {e}")
         return {"auto_report_enabled": False, "report_frequency": "daily", "report_hour": 9,
-                "trial_used": False, "hard_stop_hit": False}
+                "trial_used": False, "hard_stop_hit": False, "trade_notifications_enabled": True}
 
 def set_user_settings(chat_id, **kwargs):
     """Update user settings in Supabase."""
@@ -210,13 +211,15 @@ def show_settings_menu(chat_id, lang):
     settings = get_user_settings(chat_id)
     freq_display = MESSAGES["current_frequency"][lang].format(freq=settings["report_frequency"].capitalize())
     hour = settings["report_hour"]
+    trade_notify_status = "ON" if settings.get("trade_notifications_enabled", True) else "OFF"
     reply_markup = {
         "inline_keyboard": [
             [{"text": MESSAGES["auto_report_on"][lang] if settings["auto_report_enabled"] else MESSAGES["auto_report_off"][lang], "callback_data": "settings_auto_toggle"}],
             [{"text": MESSAGES["freq_daily_btn"][lang], "callback_data": "settings_freq_daily"},
              {"text": MESSAGES["freq_weekly_btn"][lang], "callback_data": "settings_freq_weekly"},
              {"text": MESSAGES["freq_monthly_btn"][lang], "callback_data": "settings_freq_monthly"}],
-            [{"text": MESSAGES["report_hour"][lang].format(hour=hour), "callback_data": "settings_hour"}]
+            [{"text": MESSAGES["report_hour"][lang].format(hour=hour), "callback_data": "settings_hour"}],
+            [{"text": f"🔔 Trade Notifications: {trade_notify_status}", "callback_data": "settings_trade_notify"}]
         ]
     }
     menu_text = MESSAGES["settings_title"][lang] + "\n\n" + freq_display
@@ -448,6 +451,23 @@ def telegram_webhook():
             handle_resume(chat_id, lang)
         elif text == "/settings":
             show_settings_menu(chat_id, lang)
+        elif text == "/tradenotify":
+            settings = get_user_settings(chat_id)
+            current = settings.get("trade_notifications_enabled", True)
+            status = "ON" if current else "OFF"
+            send_telegram(chat_id, f"Trade notifications are currently {status}.\nUse /tradenotify on or /tradenotify off to change.")
+        elif text.startswith("/tradenotify "):
+            parts = text.split()
+            if len(parts) == 2:
+                arg = parts[1].lower()
+                if arg in ("on", "off"):
+                    new_state = (arg == "on")
+                    set_user_settings(chat_id, trade_notifications_enabled=new_state)
+                    send_telegram(chat_id, f"✅ Trade notifications turned {arg.upper()}.")
+                else:
+                    send_telegram(chat_id, "Usage: /tradenotify on  or  /tradenotify off")
+            else:
+                send_telegram(chat_id, "Usage: /tradenotify on  or  /tradenotify off")
         elif text.startswith("/sethour"):
             parts = text.split()
             if len(parts) == 2:
@@ -495,6 +515,12 @@ def telegram_webhook():
             show_settings_menu(chat_id, lang)
         elif data == "settings_hour":
             send_telegram(chat_id, MESSAGES["set_hour_prompt"][lang])
+        elif data == "settings_trade_notify":
+            settings = get_user_settings(chat_id)
+            current = settings.get("trade_notifications_enabled", True)
+            set_user_settings(chat_id, trade_notifications_enabled=not current)
+            send_telegram(chat_id, f"Trade notifications turned {'ON' if not current else 'OFF'}.")
+            show_settings_menu(chat_id, lang)
         else:
             send_telegram(chat_id, MESSAGES["invalid_option"][lang])
         answer_callback(query["id"])
