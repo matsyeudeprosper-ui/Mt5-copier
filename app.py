@@ -6,7 +6,7 @@ import json
 import traceback
 import math
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file   # added send_file
 import requests
 import db
 from trade_endpoints import trade_bp
@@ -21,7 +21,8 @@ from dataclasses import asdict
 
 # New import for layered architecture
 from strategy_router import route_strategy
-from notifications import send_basket_close_report   # <-- ADDED
+from notifications import send_basket_close_report
+from stats_engine import get_public_stats   # NEW
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -532,6 +533,31 @@ def list_licenses():
     except Exception as e:
         logger.error(f"list_licenses error: {e}")
         return jsonify({"error": "Database error"}), 500
+
+# ---------- PUBLIC REPORT ENDPOINTS (NEW) ----------
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    """Return aggregated trading statistics for public report."""
+    stats = get_public_stats()
+    if "error" in stats:
+        return jsonify({"error": stats["error"]}), 500
+    return jsonify(stats), 200
+
+@app.route("/report")
+def performance_report():
+    """Serve the public performance report HTML page."""
+    return render_template("report.html")
+
+@app.route("/download/ea", methods=["GET"])
+def download_ea():
+    """Provide the EA file for download."""
+    # Adjust the path to your compiled EA .ex5 file
+    # Example: place the file in a 'static' folder at the root
+    ea_file_path = os.path.join(os.path.dirname(__file__), "static", "GridLevelsTrader.ex5")
+    if not os.path.exists(ea_file_path):
+        # Fallback: serve a placeholder or redirect to a cloud link
+        return "EA file not available. Please contact support.", 404
+    return send_file(ea_file_path, as_attachment=True, download_name="Kinotrader_EA.ex5")
 
 # ---------- KEEP-ALIVE THREAD ----------
 def keep_alive():

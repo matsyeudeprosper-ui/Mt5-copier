@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Kinotrader EA – Live Performance Report</title>
+    <!-- Google Fonts & Chart.js -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,600;14..32,700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0a0c10;
+            color: #eef2ff;
+            line-height: 1.5;
+            padding: 2rem 1.5rem;
+        }
+
+        .container {
+            max-width: 1300px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #00c6ff, #0072ff);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+            letter-spacing: -0.02em;
+        }
+        .header p {
+            color: #9ca3af;
+            margin-top: 0.5rem;
+            font-size: 1.1rem;
+        }
+
+        /* Metrics Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+        .metric-card {
+            background: #13161f;
+            border-radius: 1.5rem;
+            padding: 1.5rem 1rem;
+            text-align: center;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            border: 1px solid #242a36;
+        }
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 16px 28px rgba(0,0,0,0.4);
+            border-color: #2d3748;
+        }
+        .metric-title {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #8b9bb5;
+            margin-bottom: 0.75rem;
+        }
+        .metric-value {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: #f0f3fa;
+            line-height: 1.2;
+        }
+        .metric-unit {
+            font-size: 1rem;
+            font-weight: 400;
+            color: #8b9bb5;
+        }
+        .positive {
+            color: #2ee6a2;
+        }
+        .negative {
+            color: #ff6b6b;
+        }
+        .small-text {
+            font-size: 0.85rem;
+            color: #8b9bb5;
+            margin-top: 0.5rem;
+        }
+
+        /* Chart section */
+        .chart-container {
+            background: #13161f;
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid #242a36;
+        }
+        .chart-container h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #e2e8f0;
+        }
+        canvas {
+            max-height: 400px;
+            width: 100%;
+        }
+
+        /* Action Buttons */
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1.2rem;
+            margin: 2rem 0 2rem;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+            background: #1e293b;
+            padding: 0.9rem 2rem;
+            border-radius: 3rem;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: all 0.2s;
+            border: 1px solid #334155;
+            color: #eef2ff;
+        }
+        .btn-primary {
+            background: #0072ff;
+            border: none;
+            box-shadow: 0 4px 12px rgba(0,114,255,0.3);
+        }
+        .btn-primary:hover {
+            background: #005ce6;
+            transform: scale(1.02);
+        }
+        .btn-secondary {
+            background: #1e293b;
+            border: 1px solid #3b4252;
+        }
+        .btn-secondary:hover {
+            background: #2d3748;
+            transform: scale(1.02);
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            font-size: 0.8rem;
+            color: #6c757d;
+            margin-top: 3rem;
+            border-top: 1px solid #1f2937;
+            padding-top: 2rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 700px) {
+            body { padding: 1rem; }
+            .metric-value { font-size: 1.6rem; }
+            .btn { padding: 0.7rem 1.5rem; font-size: 0.9rem; }
+            .header h1 { font-size: 1.8rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>📈 Kinotrader EA</h1>
+        <p>Automated grid & recovery system — live performance report</p>
+    </div>
+
+    <!-- Metrics will be injected here -->
+    <div class="metrics-grid" id="metricsGrid">
+        <div class="metric-card"><div class="metric-title">Loading...</div><div class="metric-value">—</div></div>
+    </div>
+
+    <!-- Equity chart -->
+    <div class="chart-container">
+        <h3>📊 Equity Growth Over Time</h3>
+        <canvas id="equityChart" width="800" height="350" style="width:100%; height:auto;"></canvas>
+    </div>
+
+    <!-- Call to action -->
+    <div class="actions">
+        <a href="https://t.me/Mr_Kinotrader_bot" target="_blank" class="btn btn-primary">🤖 Buy License on Telegram</a>
+        <a href="/download/ea" class="btn btn-secondary">📥 Download EA (MT5)</a>
+    </div>
+    <div class="footer">
+        <p>Performance data updates in real‑time. Past results do not guarantee future performance.</p>
+        <p>© 2025 Kinotrader — All rights reserved.</p>
+    </div>
+</div>
+
+<script>
+    async function fetchStats() {
+        try {
+            const response = await fetch('/api/stats');
+            const data = await response.json();
+            if (data.error) {
+                document.getElementById('metricsGrid').innerHTML = `<div class="metric-card"><div class="metric-title">Error</div><div class="metric-value">${data.error}</div></div>`;
+                return;
+            }
+            renderMetrics(data);
+            renderChart(data);
+        } catch (err) {
+            document.getElementById('metricsGrid').innerHTML = `<div class="metric-card"><div class="metric-title">Network error</div><div class="metric-value">⚠️</div></div>`;
+        }
+    }
+
+    function renderMetrics(data) {
+        const grid = document.getElementById('metricsGrid');
+        grid.innerHTML = `
+            <div class="metric-card">
+                <div class="metric-title">Net Profit</div>
+                <div class="metric-value ${data.total_profit >= 0 ? 'positive' : 'negative'}">${data.total_profit.toFixed(2)} USD</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Total Trades</div>
+                <div class="metric-value">${data.num_trades}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Win Rate</div>
+                <div class="metric-value">${data.win_rate}%</div>
+                <div class="small-text">${data.wins} wins / ${data.losses} losses</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Profit Factor</div>
+                <div class="metric-value">${data.profit_factor}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Avg Win / Loss</div>
+                <div class="metric-value"><span class="positive">+${data.avg_win}</span> / <span class="negative">-${data.avg_loss}</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Max Drawdown</div>
+                <div class="metric-value negative">-${data.max_drawdown.toFixed(2)} USD</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Recovery Factor</div>
+                <div class="metric-value">${data.recovery_factor}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Equity Growth</div>
+                <div class="metric-value positive">${data.growth}%</div>
+                <div class="small-text">${data.start_equity.toFixed(2)} → ${data.end_equity.toFixed(2)} USD</div>
+            </div>
+        `;
+    }
+
+    let chartInstance = null;
+    function renderChart(data) {
+        const ctx = document.getElementById('equityChart').getContext('2d');
+        if (chartInstance) chartInstance.destroy();
+        chartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: data.dates,
+                datasets: [{
+                    label: 'Cumulative Profit (USD)',
+                    data: data.cumulative_profit,
+                    borderColor: '#2ee6a2',
+                    backgroundColor: 'rgba(46,230,162,0.05)',
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    pointBackgroundColor: '#2ee6a2',
+                    pointBorderColor: '#13161f',
+                    tension: 0.2,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { labels: { color: '#eef2ff' } },
+                    tooltip: { mode: 'index', intersect: false, callbacks: { label: (ctx) => `${ctx.raw.toFixed(2)} USD` } }
+                },
+                scales: {
+                    x: { ticks: { color: '#9ca3af', maxRotation: 45, autoSkip: true }, grid: { color: '#1f2937' } },
+                    y: { ticks: { color: '#eef2ff', callback: (val) => val.toFixed(0) }, grid: { color: '#1f2937' } }
+                }
+            }
+        });
+    }
+
+    fetchStats();
+    // Refresh every 2 minutes
+    setInterval(fetchStats, 120000);
+</script>
+</body>
+</html>
