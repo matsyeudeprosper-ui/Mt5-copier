@@ -36,7 +36,7 @@ app.secret_key = os.urandom(24)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Supabase client (with graceful fallback)
+# Initialize Supabase client
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -58,14 +58,7 @@ set_bot_token(TELEGRAM_BOT_TOKEN)
 app.register_blueprint(trade_bp)
 app.register_blueprint(bot_bp)
 
-# ---------- JSON file storage for licenses (fallback) and config ----------
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
-LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
-CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
-HEARTBEAT_FILE = os.path.join(DATA_DIR, "heartbeat.log")
-
-# Updated DEFAULT_CONFIG with hardstop engine parameters
+# ---------- Configuration storage in Supabase ----------
 DEFAULT_CONFIG = {
     "participation_percent": 5.0,
     "mor_safety_multiplier": 1.15,
@@ -75,7 +68,6 @@ DEFAULT_CONFIG = {
     "max_grid_levels": 6,
     "enable_flip_engine": False,
     "use_extreme_tracking": False,
-    # Hardstop engine parameters
     "hardstop_lookback_days": 90,
     "hardstop_percentile": 98.0,
     "hardstop_forward_window": 12,
@@ -85,6 +77,55 @@ DEFAULT_CONFIG = {
     "hardstop_min_clamp": 2.0,
     "hardstop_max_clamp": 15.0
 }
+
+def load_config_from_supabase():
+    """Load configuration from Supabase, falling back to DEFAULT_CONFIG if not found."""
+    if not supabase:
+        logger.warning("Supabase not available, using default config")
+        return DEFAULT_CONFIG.copy()
+    try:
+        result = supabase.table('server_config').select('config').eq('id', 1).execute()
+        if result.data and result.data[0].get('config'):
+            config = result.data[0]['config']
+            # Ensure all DEFAULT_CONFIG keys exist (merge)
+            merged = DEFAULT_CONFIG.copy()
+            merged.update(config)
+            return merged
+        else:
+            # Insert default config if not present
+            supabase.table('server_config').insert({
+                "id": 1,
+                "config": DEFAULT_CONFIG,
+                "updated_at": datetime.now().isoformat()
+            }).execute()
+            return DEFAULT_CONFIG.copy()
+    except Exception as e:
+        logger.error(f"Failed to load config from Supabase: {e}")
+        return DEFAULT_CONFIG.copy()
+
+def save_config_to_supabase(config):
+    """Save configuration to Supabase."""
+    if not supabase:
+        logger.warning("Supabase not available, cannot save config")
+        return False
+    try:
+        supabase.table('server_config').update({
+            "config": config,
+            "updated_at": datetime.now().isoformat()
+        }).eq('id', 1).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save config to Supabase: {e}")
+        return False
+
+# Load config on startup (and cache for the lifetime of the process)
+g_config_cache = load_config_from_supabase()
+
+# ---------- JSON file storage for licenses (fallback) and config ----------
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
+HEARTBEAT_FILE = os.path.join(DATA_DIR, "heartbeat.log")
 
 def load_licenses():
     if supabase:
@@ -118,26 +159,6 @@ def save_licenses(licenses_dict):
                 supabase.table('licenses').upsert(lic).execute()
         except Exception as e:
             logger.error(f"Supabase upsert failed: {e}")
-
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        return DEFAULT_CONFIG.copy()
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            saved = json.load(f)
-        config = DEFAULT_CONFIG.copy()
-        config.update(saved)
-        return config
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        return DEFAULT_CONFIG.copy()
-
-def save_config(config):
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save config: {e}")
 
 def log_heartbeat(data):
     try:
@@ -203,26 +224,12 @@ def validate_license():
 
 @app.route("/get-config", methods=["GET"])
 def get_config():
-    config = load_config()
-    response = {
-        "participation_percent": config.get("participation_percent", 5.0),
-        "mor_safety_multiplier": config.get("mor_safety_multiplier", 1.15),
-        "max_recovery_additions": config.get("max_recovery_additions", 5),
-        "hardstop_percent": config.get("hardstop_percent", 5.0),
-        "min_entry_spacing_percent": config.get("min_entry_spacing_percent", 0.1),
-        "max_grid_levels": config.get("max_grid_levels", 6),
-        "enable_flip_engine": config.get("enable_flip_engine", False),
-        "use_extreme_tracking": config.get("use_extreme_tracking", False),
-        # Hardstop engine parameters
-        "hardstop_lookback_days": config.get("hardstop_lookback_days", 90),
-        "hardstop_percentile": config.get("hardstop_percentile", 98.0),
-        "hardstop_forward_window": config.get("hardstop_forward_window", 12),
-        "hardstop_atr_mult_d1": config.get("hardstop_atr_mult_d1", 4.0),
-        "hardstop_atr_mult_h4": config.get("hardstop_atr_mult_h4", 2.5),
-        "hardstop_spread_mult": config.get("hardstop_spread_mult", 2.0),
-        "hardstop_min_clamp": config.get("hardstop_min_clamp", 2.0),
-        "hardstop_max_clamp": config.get("hardstop_max_clamp", 15.0)
-    }
+    # Use cached config (reload from Supabase every hour? For simplicity, cache is set once)
+    # To allow live updates, you could reload on each call, but performance is fine.
+    # We'll use the global cache.
+    global g_config_cache
+    # Optionally refresh cache every 5 minutes? Not needed for now.
+    response = {k: v for k, v in g_config_cache.items()}
     return jsonify(response), 200
 
 @app.route("/heartbeat", methods=["POST"])
@@ -286,7 +293,7 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-# ---------- PAIRING DECISION ENDPOINT (UPDATED with strategy router + ARBE + notifications) ----------
+# ---------- PAIRING DECISION ENDPOINT ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()
@@ -340,10 +347,8 @@ def pairing_decision():
         mor = account_info.get("mor", 0.0)
         account = account_info.get("account", 0)
 
-        # basket_start_equity for ARBE
         basket_start_equity = account_info.get("basket_start_equity", 0.0)
 
-        # User profile (can be extended from license data later)
         user_profile = {
             "anygain_aggressiveness": 1.0,
             "pairing_aggressiveness": 1.0,
@@ -368,10 +373,9 @@ def pairing_decision():
             basket_start_equity=basket_start_equity
         )
 
-        # +++ NOTIFICATION: send report on full basket exit +++
+        # Notification on full basket exit
         if decision and decision.execute_now:
             try:
-                # Calculate total volume of all positions
                 total_volume = sum(p.volume for p in positions)
                 closed_volume = sum(a.close_volume for a in decision.winner_actions)
                 if decision.loser_ticket != 0:
@@ -379,9 +383,7 @@ def pairing_decision():
                         if p.ticket == decision.loser_ticket:
                             closed_volume += p.volume
                             break
-                # If closed volume equals total volume (within epsilon), it's a full basket exit
                 if closed_volume >= total_volume - 1e-8:
-                    # Look up Telegram chat_id from Supabase using bound_account
                     chat_id = None
                     if supabase:
                         try:
@@ -430,7 +432,6 @@ def entry_decision():
         return jsonify({"error": "Missing JSON"}), 400
 
     try:
-        # Convert positions from dicts to PositionInfo objects
         if "positions" in data:
             positions_data = data["positions"]
             data["positions"] = [PositionInfo(**p) for p in positions_data]
@@ -452,15 +453,29 @@ def admin_set_config():
     if not new_config:
         return jsonify({"error": "Missing config"}), 400
 
-    current = load_config()
+    global g_config_cache
+    # Update in-memory cache
     for key, value in new_config.items():
         if key in DEFAULT_CONFIG:
-            current[key] = value
+            g_config_cache[key] = value
         else:
             logger.warning(f"Unknown config key: {key}")
 
-    save_config(current)
-    return jsonify({"status": "updated", "config": current}), 200
+    # Save to Supabase
+    if supabase:
+        if save_config_to_supabase(g_config_cache):
+            return jsonify({"status": "updated", "config": g_config_cache}), 200
+        else:
+            return jsonify({"error": "Failed to save config to Supabase"}), 500
+    else:
+        # Fallback to file (for local testing)
+        try:
+            with open("config.json", "w") as f:
+                json.dump(g_config_cache, f, indent=2)
+            return jsonify({"status": "updated", "config": g_config_cache}), 200
+        except Exception as e:
+            logger.error(f"Failed to save config to file: {e}")
+            return jsonify({"error": "Failed to save config"}), 500
 
 @app.route("/admin/create-license", methods=["POST"])
 def admin_create_license():
@@ -553,11 +568,11 @@ def list_licenses():
         logger.error(f"list_licenses error: {e}")
         return jsonify({"error": "Database error"}), 500
 
-# ---------- PUBLIC REPORT ENDPOINTS (NEW) ----------
+# ---------- PUBLIC REPORT ENDPOINTS ----------
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
     """Return aggregated trading statistics for public report."""
-    stats = get_public_stats(supabase)   # pass the global supabase client
+    stats = get_public_stats(supabase)
     if "error" in stats:
         return jsonify({"error": stats["error"]}), 500
     return jsonify(stats), 200
@@ -570,11 +585,8 @@ def performance_report():
 @app.route("/download/ea", methods=["GET"])
 def download_ea():
     """Provide the EA file for download."""
-    # Adjust the path to your compiled EA .ex5 file
-    # Example: place the file in a 'static' folder at the root
     ea_file_path = os.path.join(os.path.dirname(__file__), "static", "GridLevelsTrader.ex5")
     if not os.path.exists(ea_file_path):
-        # Fallback: serve a placeholder or redirect to a cloud link
         return "EA file not available. Please contact support.", 404
     return send_file(ea_file_path, as_attachment=True, download_name="Kinotrader_EA.ex5")
 
@@ -593,7 +605,7 @@ if not app.debug:
     threading.Thread(target=keep_alive, daemon=True).start()
     logger.info("Keep-alive thread started (every 60 seconds)")
 
-# Start scheduler (from existing code)
+# Start scheduler
 scheduler = start_scheduler()
 
 # ---------- EXISTING ENDPOINTS (health, buy, payment, test) ----------
