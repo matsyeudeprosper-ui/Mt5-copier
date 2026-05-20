@@ -6,7 +6,7 @@ import json
 import traceback
 import math
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, render_template, send_file   # added send_file
+from flask import Flask, request, jsonify, render_template, send_file
 import requests
 import db
 from trade_endpoints import trade_bp
@@ -22,7 +22,7 @@ from dataclasses import asdict
 # New import for layered architecture
 from strategy_router import route_strategy
 from notifications import send_basket_close_report
-from stats_engine import get_public_stats   # NEW
+from stats_engine import get_public_stats
 
 # Environment variables
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -65,6 +65,7 @@ LICENSES_JSON_BACKUP = os.path.join(DATA_DIR, "licenses_backup.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 HEARTBEAT_FILE = os.path.join(DATA_DIR, "heartbeat.log")
 
+# Updated DEFAULT_CONFIG with hardstop engine parameters
 DEFAULT_CONFIG = {
     "participation_percent": 5.0,
     "mor_safety_multiplier": 1.15,
@@ -73,7 +74,16 @@ DEFAULT_CONFIG = {
     "min_entry_spacing_percent": 0.1,
     "max_grid_levels": 6,
     "enable_flip_engine": False,
-    "use_extreme_tracking": False
+    "use_extreme_tracking": False,
+    # Hardstop engine parameters
+    "hardstop_lookback_days": 90,
+    "hardstop_percentile": 98.0,
+    "hardstop_forward_window": 12,
+    "hardstop_atr_mult_d1": 4.0,
+    "hardstop_atr_mult_h4": 2.5,
+    "hardstop_spread_mult": 2.0,
+    "hardstop_min_clamp": 2.0,
+    "hardstop_max_clamp": 15.0
 }
 
 def load_licenses():
@@ -202,7 +212,16 @@ def get_config():
         "min_entry_spacing_percent": config.get("min_entry_spacing_percent", 0.1),
         "max_grid_levels": config.get("max_grid_levels", 6),
         "enable_flip_engine": config.get("enable_flip_engine", False),
-        "use_extreme_tracking": config.get("use_extreme_tracking", False)
+        "use_extreme_tracking": config.get("use_extreme_tracking", False),
+        # Hardstop engine parameters
+        "hardstop_lookback_days": config.get("hardstop_lookback_days", 90),
+        "hardstop_percentile": config.get("hardstop_percentile", 98.0),
+        "hardstop_forward_window": config.get("hardstop_forward_window", 12),
+        "hardstop_atr_mult_d1": config.get("hardstop_atr_mult_d1", 4.0),
+        "hardstop_atr_mult_h4": config.get("hardstop_atr_mult_h4", 2.5),
+        "hardstop_spread_mult": config.get("hardstop_spread_mult", 2.0),
+        "hardstop_min_clamp": config.get("hardstop_min_clamp", 2.0),
+        "hardstop_max_clamp": config.get("hardstop_max_clamp", 15.0)
     }
     return jsonify(response), 200
 
@@ -535,7 +554,6 @@ def list_licenses():
         return jsonify({"error": "Database error"}), 500
 
 # ---------- PUBLIC REPORT ENDPOINTS (NEW) ----------
-# Replace the existing /api/stats route with this:
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
     """Return aggregated trading statistics for public report."""
