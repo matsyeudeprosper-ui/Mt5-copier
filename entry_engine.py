@@ -97,18 +97,11 @@ def validate_grid_addition(req: EntryDecisionRequest) -> EntryDecisionResponse:
             reason="level already occupied"
         )
 
-    # --- SPACING CHECKS (both market price and level price) -----
+    # ---- SPACING CHECK USING THE TRIGGER LEVEL PRICE (not market price) ----
     required = req.required_spacing
     if direction:
         last_price = req.last_buy_addition_price if req.last_buy_addition_price > 0 else req.lowest_buy_entry
-        # Check market price (ask)
-        if abs(req.ask - last_price) < required - EPS:
-            return EntryDecisionResponse(
-                success=True,
-                decision="none",
-                reason=f"spacing too small: market {abs(req.ask - last_price):.5f} < {required:.5f}"
-            )
-        # Check trigger level price itself
+        # Use trigger_level_price (the actual grid level) for spacing
         if abs(req.trigger_level_price - last_price) < required - EPS:
             return EntryDecisionResponse(
                 success=True,
@@ -117,12 +110,6 @@ def validate_grid_addition(req: EntryDecisionRequest) -> EntryDecisionResponse:
             )
     else:
         last_price = req.last_sell_addition_price if req.last_sell_addition_price > 0 else req.highest_sell_entry
-        if abs(req.bid - last_price) < required - EPS:
-            return EntryDecisionResponse(
-                success=True,
-                decision="none",
-                reason=f"spacing too small: market {abs(req.bid - last_price):.5f} < {required:.5f}"
-            )
         if abs(req.trigger_level_price - last_price) < required - EPS:
             return EntryDecisionResponse(
                 success=True,
