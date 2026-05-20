@@ -97,7 +97,7 @@ def validate_grid_addition(req: EntryDecisionRequest) -> EntryDecisionResponse:
             reason="level already occupied"
         )
 
-    # --- SPACING CHECKS (both market price and level price) ---
+    # --- SPACING CHECKS (both market price and level price) -----
     required = req.required_spacing
     if direction:
         last_price = req.last_buy_addition_price if req.last_buy_addition_price > 0 else req.lowest_buy_entry
