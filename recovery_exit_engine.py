@@ -3,6 +3,7 @@ Recovery Exit Engine (ARBE) – Adaptive Recovery Basket Exit.
 Closes the entire basket when equity recovers above starting equity
 by an adaptive percentage based on pressure score.
 Now works for ANY basket with >=2 positions, regardless of stress history.
+ADDED: strict check that expected net profit is positive.
 """
 
 from typing import List, Optional, Dict
@@ -37,7 +38,7 @@ def get_recovery_exit_decision(
     if basket_start_equity <= 0:
         return None
 
-    # Adaptive target based on pressure score (still use it for scaling, but no gate)
+    # Adaptive target based on pressure score
     if pressure_score < 0.5:
         target_percent = 0.20
     elif pressure_score < 0.7:
@@ -49,9 +50,15 @@ def get_recovery_exit_decision(
 
     target_equity = basket_start_equity * (1.0 + target_percent / 100.0)
 
-    # Small absolute profit floor to avoid spread eating everything
+    # Minimum absolute profit floor to avoid spread eating everything
     min_absolute_profit = max(0.50, initial_equity * 0.0005)   # $0.50 or 0.05% of initial equity
-    if equity < target_equity and equity - basket_start_equity < min_absolute_profit:
+    net_profit = equity - basket_start_equity
+
+    # Reject if net profit is not positive
+    if net_profit <= 0:
+        return None
+
+    if net_profit < min_absolute_profit and equity < target_equity:
         return None
 
     if equity < target_equity:
@@ -77,7 +84,7 @@ def get_recovery_exit_decision(
         loser_ticket=0,
         winner_actions=winner_actions,
         required_winner_profit=0.0,
-        expected_net_profit=equity - basket_start_equity,
+        expected_net_profit=net_profit,
         required_price=0.0,
         score=0.0,
         net_ratio=0.0,
