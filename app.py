@@ -293,6 +293,42 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
+
+@app.route("/send-risk-notification", methods=["POST"])
+def send_risk_notification():
+    """
+    Receives risk notification from EA and forwards it to the user's Telegram.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON"}), 400
+
+    license_key = data.get("license_key")
+    message = data.get("message")
+    if not license_key or not message:
+        return jsonify({"error": "Missing license_key or message"}), 400
+
+    try:
+        # Fetch user's Telegram chat_id from Supabase
+        result = supabase.table('licenses').select('telegram_chat_id').eq('license_key', license_key).eq('is_master', False).execute()
+        if not result.data or not result.data[0].get('telegram_chat_id'):
+            logger.warning(f"No Telegram chat_id found for license {license_key}")
+            return jsonify({"error": "No chat_id found"}), 404
+
+        chat_id = result.data[0]['telegram_chat_id']
+        # Send message via Telegram bot
+        from telegram_bot import send_telegram
+        sent = send_telegram(chat_id, message)
+        if sent:
+            logger.info(f"Risk notification sent to {chat_id} for license {license_key}")
+            return jsonify({"status": "sent"}), 200
+        else:
+            return jsonify({"error": "Telegram send failed"}), 500
+    except Exception as e:
+        logger.error(f"Risk notification error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 # ---------- PAIRING DECISION ENDPOINT ----------
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
