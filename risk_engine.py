@@ -1,7 +1,7 @@
 import math
 from datetime import datetime
 
-# Constants (match EA defaults)
+# Constants (match EA defaults) yes
 DEFAULT_MIN_LOT = 0.01
 DEFAULT_MAX_LOT = 0.50
 DEFAULT_LOT_STEP = 0.01
