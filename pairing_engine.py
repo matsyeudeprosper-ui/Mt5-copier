@@ -6,6 +6,7 @@ PAIRING ENGINE MODE:
 - Engine only simulates and scores candidates
 - Designed to mirror MT5 EA pairing logic
 - Now implements pressure-based gating and dynamic thresholds
+- MODIFIED: Enforces net_profit >= 0 (no negative exits)
 """
 
 import math
@@ -479,6 +480,12 @@ def get_best_pairing_decision(
     )
 
     if not exec_ok or not winner_actions:
+        return None
+
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # CRITICAL FIX: Ensure net profit is never negative
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    if net_profit < -EPS:
         return None
 
     # ---------------------------------------------------------
