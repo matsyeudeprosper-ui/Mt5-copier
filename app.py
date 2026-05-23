@@ -12,7 +12,7 @@ import db
 from trade_endpoints import trade_bp
 from telegram_bot import bot_bp, set_bot_token
 from scheduler import start_scheduler
-from risk_engine import calculate_dynamic_lot_size, can_add_position
+from risk_engine import calculate_dynamic_lot_size, can_add_position, calculate_convex_lot_curve
 from pairing_engine import get_best_pairing_decision, PairingConfig, PairingEngineState
 from supabase import create_client, Client
 from entry_engine import get_entry_decision
@@ -224,11 +224,7 @@ def validate_license():
 
 @app.route("/get-config", methods=["GET"])
 def get_config():
-    # Use cached config (reload from Supabase every hour? For simplicity, cache is set once)
-    # To allow live updates, you could reload on each call, but performance is fine.
-    # We'll use the global cache.
     global g_config_cache
-    # Optionally refresh cache every 5 minutes? Not needed for now.
     response = {k: v for k, v in g_config_cache.items()}
     return jsonify(response), 200
 
@@ -285,6 +281,57 @@ def calculate_lot():
         logger.error(f"Lot calculation error: {e}")
         return jsonify({"error": "Internal server error", "lot": -1}), 500
 
+@app.route("/calculate-curve", methods=["POST"])
+def calculate_curve():
+    """
+    New endpoint: returns a convex lot curve for all grid levels.
+    Input same as /calculate-lot plus optional curve parameters.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON"}), 400
+
+    required = ["equity", "protected_floor", "initial_account_equity", "direction",
+                "first_entry_price", "free_margin", "max_expected_move_percent",
+                "max_grid_levels", "max_recovery_additions", "min_operational_additions",
+                "min_entry_spacing_percent", "mor_safety_multiplier",
+                "growth_participation_percent", "grid_levels", "tick_value",
+                "tick_size", "min_lot", "max_lot", "lot_step", "symbol"]
+    for field in required:
+        if field not in data:
+            return jsonify({"error": f"Missing {field}"}), 400
+
+    try:
+        curve = calculate_convex_lot_curve(
+            equity=data["equity"],
+            protected_floor=data["protected_floor"],
+            initial_account_equity=data["initial_account_equity"],
+            direction=data["direction"],
+            first_entry_price=data["first_entry_price"],
+            free_margin=data["free_margin"],
+            max_expected_move_percent=data["max_expected_move_percent"],
+            max_grid_levels=data["max_grid_levels"],
+            max_recovery_additions=data["max_recovery_additions"],
+            min_operational_additions=data["min_operational_additions"],
+            min_entry_spacing_percent=data["min_entry_spacing_percent"],
+            mor_safety_multiplier=data["mor_safety_multiplier"],
+            growth_participation_percent=data["growth_participation_percent"],
+            grid_levels=data["grid_levels"],
+            tick_value=data["tick_value"],
+            tick_size=data["tick_size"],
+            min_lot=data["min_lot"],
+            max_lot=data["max_lot"],
+            lot_step=data["lot_step"],
+            symbol=data["symbol"],
+            curve_acceleration=data.get("curve_acceleration", 1.35),
+            protected_early_levels=data.get("protected_early_levels", 2),
+            min_partial_capable_lot=data.get("min_partial_capable_lot", 0.02)
+        )
+        return jsonify({"curve": curve, "allowed": True}), 200
+    except Exception as e:
+        logger.error(f"Curve calculation error: {e}")
+        return jsonify({"error": "Internal server error", "curve": []}), 500
+
 @app.route("/can-add-position", methods=["POST"])
 def can_add():
     data = request.get_json()
@@ -293,12 +340,8 @@ def can_add():
     allowed_bool = can_add_position(projected, allowed)
     return jsonify({"allowed": allowed_bool}), 200
 
-
 @app.route("/send-risk-notification", methods=["POST"])
 def send_risk_notification():
-    """
-    Receives risk notification from EA and forwards it to the user's Telegram.
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON"}), 400
@@ -309,14 +352,12 @@ def send_risk_notification():
         return jsonify({"error": "Missing license_key or message"}), 400
 
     try:
-        # Fetch user's Telegram chat_id from Supabase
         result = supabase.table('licenses').select('telegram_chat_id').eq('license_key', license_key).eq('is_master', False).execute()
         if not result.data or not result.data[0].get('telegram_chat_id'):
             logger.warning(f"No Telegram chat_id found for license {license_key}")
             return jsonify({"error": "No chat_id found"}), 404
 
         chat_id = result.data[0]['telegram_chat_id']
-        # Send message via Telegram bot
         from telegram_bot import send_telegram
         sent = send_telegram(chat_id, message)
         if sent:
@@ -327,7 +368,6 @@ def send_risk_notification():
     except Exception as e:
         logger.error(f"Risk notification error: {e}")
         return jsonify({"error": "Internal server error"}), 500
-
 
 # ---------- PAIRING DECISION ENDPOINT ----------
 @app.route("/pairing-decision", methods=["POST"])
@@ -340,7 +380,6 @@ def pairing_decision():
     if not request_id:
         return jsonify({"error": "Missing request_id"}), 400
 
-    # Idempotency
     if request_id in processed_requests:
         cached = processed_requests[request_id]
         if datetime.now() < cached["expires_at"]:
@@ -409,7 +448,6 @@ def pairing_decision():
             basket_start_equity=basket_start_equity
         )
 
-        # Notification on full basket exit
         if decision and decision.execute_now:
             try:
                 total_volume = sum(p.volume for p in positions)
@@ -490,21 +528,18 @@ def admin_set_config():
         return jsonify({"error": "Missing config"}), 400
 
     global g_config_cache
-    # Update in-memory cache
     for key, value in new_config.items():
         if key in DEFAULT_CONFIG:
             g_config_cache[key] = value
         else:
             logger.warning(f"Unknown config key: {key}")
 
-    # Save to Supabase
     if supabase:
         if save_config_to_supabase(g_config_cache):
             return jsonify({"status": "updated", "config": g_config_cache}), 200
         else:
             return jsonify({"error": "Failed to save config to Supabase"}), 500
     else:
-        # Fallback to file (for local testing)
         try:
             with open("config.json", "w") as f:
                 json.dump(g_config_cache, f, indent=2)
@@ -579,7 +614,7 @@ def admin_disable_license():
                 return jsonify({"error": "License not found"}), 404
         else:
             licenses = load_licenses()
-            if license_key in licenses:
+            if license_key not in licenses:
                 return jsonify({"error": "License not found"}), 404
             licenses[license_key]["is_active"] = False
             licenses[license_key]["expires_at"] = datetime.now().isoformat()
@@ -607,7 +642,6 @@ def list_licenses():
 # ---------- PUBLIC REPORT ENDPOINTS ----------
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
-    """Return aggregated trading statistics for public report."""
     stats = get_public_stats(supabase)
     if "error" in stats:
         return jsonify({"error": stats["error"]}), 500
@@ -615,12 +649,10 @@ def api_stats():
 
 @app.route("/report")
 def performance_report():
-    """Serve the public performance report HTML page."""
     return render_template("report.html")
 
 @app.route("/download/ea", methods=["GET"])
 def download_ea():
-    """Provide the EA file for download."""
     ea_file_path = os.path.join(os.path.dirname(__file__), "static", "GridLevelsTrader.ex5")
     if not os.path.exists(ea_file_path):
         return "EA file not available. Please contact support.", 404
@@ -644,7 +676,7 @@ if not app.debug:
 # Start scheduler
 scheduler = start_scheduler()
 
-# ---------- EXISTING ENDPOINTS (health, buy, payment, test) ----------
+# ---------- EXISTING ENDPOINTS ----------
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "alive"}
