@@ -13,7 +13,7 @@ def compute_minimum_operational_reserve(is_buy, max_expected_move_percent, min_e
                                         first_entry_price, tick_value, tick_size, symbol):
     """
     Replicates ComputeMinimumOperationalReserve from EA.
-    grid_levels: list of dicts with keys 'price' and 'isHigh'
+    Now uses correct distance to hardstop.
     """
     min_lot = DEFAULT_MIN_LOT
     hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
@@ -44,13 +44,13 @@ def compute_minimum_operational_reserve(is_buy, max_expected_move_percent, min_e
         addition_prices.sort(reverse=True)
     
     total_loss = 0.0
-    # First trade
+    # First trade: distance to hardstop
     distance = abs(first_entry_price - hardstop)
     ticks = distance / tick_size
     loss = ticks * tick_value * min_lot
     total_loss += loss
     
-    # Additions
+    # Additions: distance from each addition price to hardstop
     for price in addition_prices[:min_operational_additions]:
         distance = abs(price - hardstop)
         ticks = distance / tick_size
@@ -69,8 +69,7 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
                                growth_participation_percent, grid_levels,
                                tick_value, tick_size, min_lot, max_lot, lot_step, symbol):
     """
-    Replicates CalculateDynamicLotSize from EA.
-    Returns lot size (float) that is at least 2 * min_lot (to allow partial closes).
+    Replicates CalculateDynamicLotSize from EA with CORRECT worst_distance.
     """
     unlocked_surplus = max(0, equity - protected_floor)
     if unlocked_surplus <= 0.01:
@@ -78,11 +77,9 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
         lot = math.floor(lot / lot_step) * lot_step
         lot = max(lot, min_lot)
         lot = min(lot, max_lot)
-        # Ensure at least 2 * min_lot (unless impossible)
         min_allowed = min_lot * 2.0
         if lot < min_allowed - 1e-8:
             lot = min_allowed
-            # Re‑round to lot step
             lot = math.floor(lot / lot_step) * lot_step
             if lot < min_lot:
                 lot = min_lot
@@ -100,31 +97,46 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
     growth_participation = locked_profit * (growth_participation_percent / 100.0)
     total_allowed_loss = mor + unlocked_surplus + growth_participation
     
-    # Estimate worst-case distance using grid levels
-    worst_distance = 0
+    # Determine the farthest grid level from entry (the last planned addition)
+    # For buys, the farthest level is the lowest price (most negative)
+    # For sells, the farthest level is the highest price
+    # We need the distance from that farthest level to the hardstop, not just the grid spacing.
     hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
+    
+    # Collect all planned addition prices (including estimated if grid_levels missing)
+    addition_prices = []
     if grid_levels:
         for level in grid_levels:
-            if is_buy and not level['isHigh']:
-                dist = level['price'] - hardstop
-                if dist < 0: dist = 0
-                worst_distance = max(worst_distance, dist)
-            elif not is_buy and level['isHigh']:
-                dist = hardstop - level['price']
-                if dist < 0: dist = 0
-                worst_distance = max(worst_distance, dist)
-    if worst_distance <= 0:
+            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
+                addition_prices.append(level['price'])
+            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
+                addition_prices.append(level['price'])
+    # Ensure we have at least max_grid_levels-1 addition prices
+    levels_needed = max_grid_levels - 1
+    if len(addition_prices) < levels_needed:
         grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
-        worst_distance = grid_spacing * (max_grid_levels - 1)
-        if worst_distance <= 0:
-            worst_distance = 1.0
+        last_price = addition_prices[-1] if addition_prices else first_entry_price
+        for i in range(len(addition_prices), levels_needed):
+            if is_buy:
+                last_price -= grid_spacing
+            else:
+                last_price += grid_spacing
+            addition_prices.append(last_price)
+    
+    # Find farthest addition price (lowest for buys, highest for sells)
+    farthest_price = min(addition_prices) if is_buy else max(addition_prices)
+    worst_distance = abs(farthest_price - hardstop)
+    if worst_distance <= 0:
+        # fallback: use grid_spacing * (max_grid_levels-1) + first_entry * max_expected_move_percent/100
+        grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
+        worst_distance = grid_spacing * (max_grid_levels - 1) + first_entry_price * (max_expected_move_percent / 100.0)
     
     ticks = worst_distance / tick_size
     loss_per_lot = ticks * tick_value
     if loss_per_lot <= 0:
         lot = min_lot
     else:
-        reserved_positions = 1.0 + min_operational_additions
+        reserved_positions = max_grid_levels  # all positions including first
         max_lot_possible = total_allowed_loss / (loss_per_lot * reserved_positions)
         lot = min(max_lot_possible, max_lot)
         lot = math.floor(lot / lot_step) * lot_step
@@ -138,7 +150,6 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
     min_allowed = min_lot * 2.0
     if lot < min_allowed - 1e-8:
         lot = min_allowed
-        # Re‑round to lot step
         lot = math.floor(lot / lot_step) * lot_step
         if lot < min_lot:
             lot = min_lot
@@ -147,44 +158,10 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
     
     return lot
 
-# ----------------------------------------------------------------------
-# New convex curve functions
-# ----------------------------------------------------------------------
 
-def compute_projected_loss_fixed_lot(lot_size, num_levels, is_buy, first_entry_price,
-                                      max_expected_move_percent, grid_levels,
-                                      min_entry_spacing_percent, tick_value, tick_size, min_lot):
-    """Compute projected loss at hardstop for a fixed lot size across all levels."""
-    hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
-    total_loss = 0.0
-    # First trade
-    distance = abs(first_entry_price - hardstop)
-    ticks = distance / tick_size
-    loss = ticks * tick_value * lot_size
-    total_loss += loss
-    # Build addition prices (same as compute_minimum_operational_reserve)
-    addition_prices = []
-    if grid_levels:
-        for level in grid_levels:
-            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
-                addition_prices.append(level['price'])
-            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
-                addition_prices.append(level['price'])
-    # Ensure at least num_levels-1 additions
-    while len(addition_prices) < num_levels - 1:
-        grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
-        last_price = addition_prices[-1] if addition_prices else first_entry_price
-        if is_buy:
-            last_price -= grid_spacing
-        else:
-            last_price += grid_spacing
-        addition_prices.append(last_price)
-    for price in addition_prices[:num_levels-1]:
-        distance = abs(price - hardstop)
-        ticks = distance / tick_size
-        loss = ticks * tick_value * lot_size
-        total_loss += loss
-    return total_loss
+# ----------------------------------------------------------------------
+# New convex curve functions (using corrected base lot)
+# ----------------------------------------------------------------------
 
 def compute_projected_loss_for_curve(curve, is_buy, first_entry_price,
                                       max_expected_move_percent, grid_levels,
@@ -197,7 +174,7 @@ def compute_projected_loss_for_curve(curve, is_buy, first_entry_price,
     ticks = distance / tick_size
     loss = ticks * tick_value * curve[0]
     total_loss += loss
-    # Build addition prices
+    # Build addition prices (same as before)
     addition_prices = []
     if grid_levels:
         for level in grid_levels:
@@ -235,7 +212,7 @@ def calculate_convex_lot_curve(equity, protected_floor, initial_account_equity,
     following a convex (late-loading) distribution while preserving total
     projected hardstop loss equal to the flat distribution.
     """
-    # Compute flat lot size
+    # Compute flat lot size using corrected function
     flat_lot = calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
                                           direction, first_entry_price, free_margin,
                                           max_expected_move_percent, max_grid_levels,
@@ -288,11 +265,12 @@ def calculate_convex_lot_curve(equity, protected_floor, initial_account_equity,
             curve[i] = max_lot
     
     # Verify projected loss against flat baseline
-    flat_loss = compute_projected_loss_fixed_lot(flat_lot, max_grid_levels, (direction=="buy"),
+    is_buy = (direction == "buy")
+    flat_loss = compute_projected_loss_fixed_lot(flat_lot, max_grid_levels, is_buy,
                                                  first_entry_price, max_expected_move_percent,
                                                  grid_levels, min_entry_spacing_percent,
                                                  tick_value, tick_size, min_lot)
-    curve_loss = compute_projected_loss_for_curve(curve, (direction=="buy"),
+    curve_loss = compute_projected_loss_for_curve(curve, is_buy,
                                                   first_entry_price, max_expected_move_percent,
                                                   grid_levels, min_entry_spacing_percent,
                                                   tick_value, tick_size)
@@ -305,6 +283,42 @@ def calculate_convex_lot_curve(equity, protected_floor, initial_account_equity,
                 curve[i] = max_lot
     
     return curve
+
+
+def compute_projected_loss_fixed_lot(lot_size, num_levels, is_buy, first_entry_price,
+                                      max_expected_move_percent, grid_levels,
+                                      min_entry_spacing_percent, tick_value, tick_size, min_lot):
+    """Compute projected loss at hardstop for a fixed lot size across all levels."""
+    hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
+    total_loss = 0.0
+    # First trade
+    distance = abs(first_entry_price - hardstop)
+    ticks = distance / tick_size
+    loss = ticks * tick_value * lot_size
+    total_loss += loss
+    # Build addition prices
+    addition_prices = []
+    if grid_levels:
+        for level in grid_levels:
+            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
+                addition_prices.append(level['price'])
+            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
+                addition_prices.append(level['price'])
+    # Ensure at least num_levels-1 additions
+    while len(addition_prices) < num_levels - 1:
+        grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
+        last_price = addition_prices[-1] if addition_prices else first_entry_price
+        if is_buy:
+            last_price -= grid_spacing
+        else:
+            last_price += grid_spacing
+        addition_prices.append(last_price)
+    for price in addition_prices[:num_levels-1]:
+        distance = abs(price - hardstop)
+        ticks = distance / tick_size
+        loss = ticks * tick_value * lot_size
+        total_loss += loss
+    return total_loss
 
 
 def can_add_position(projected_loss, allowed_loss):
