@@ -7,44 +7,70 @@ BASE_LOT_SIZE = 0.02
 MAX_MARGIN_USAGE_PERCENT = 20.0
 
 
+def build_addition_prices(is_buy, first_entry_price, grid_levels, min_entry_spacing_percent, count_needed):
+    """
+    Build up to `count_needed` addition prices in the adverse direction from
+    first_entry_price: real structural levels first (nearest-to-entry order),
+    then synthetic fallback prices continuing outward from the last known
+    price (real or synthetic) using min_entry_spacing_percent for any
+    remaining slots. Used consistently by every loss/sizing calculation below
+    so they all agree on where the grid's addition levels actually sit.
+    """
+    real_prices = []
+    if grid_levels:
+        for level in grid_levels:
+            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
+                real_prices.append(level['price'])
+            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
+                real_prices.append(level['price'])
+
+    # Nearest-to-entry first
+    if is_buy:
+        real_prices.sort(reverse=True)
+    else:
+        real_prices.sort()
+
+    addition_prices = real_prices[:count_needed]
+
+    grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
+    last_price = addition_prices[-1] if addition_prices else first_entry_price
+    while len(addition_prices) < count_needed:
+        last_price = (last_price - grid_spacing) if is_buy else (last_price + grid_spacing)
+        addition_prices.append(last_price)
+
+    return addition_prices
+
+
+def loss_distance(entry_price, hardstop_price, is_buy):
+    """
+    Distance (>=0) from entry_price to hardstop_price in the adverse
+    direction. Mirrors the MQL5 PositionLossAtHardstopPrice clamp: if
+    entry_price sits beyond the hardstop, the basket would already have
+    closed before price ever reached it, so that position could never
+    actually open — its loss contribution is 0, not a phantom distance.
+    """
+    distance = (entry_price - hardstop_price) if is_buy else (hardstop_price - entry_price)
+    return max(distance, 0.0)
+
+
 def compute_minimum_operational_reserve(is_buy, max_expected_move_percent, min_entry_spacing_percent,
                                         grid_levels, min_operational_additions, mor_safety_multiplier,
                                         first_entry_price, tick_value, tick_size, symbol):
     min_lot = DEFAULT_MIN_LOT
     hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
 
-    addition_prices = []
-    if grid_levels:
-        for level in grid_levels:
-            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
-                addition_prices.append(level['price'])
-            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
-                addition_prices.append(level['price'])
-
-    if len(addition_prices) < min_operational_additions:
-        grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
-        last_price = first_entry_price
-        for i in range(len(addition_prices), min_operational_additions):
-            if is_buy:
-                last_price -= grid_spacing
-            else:
-                last_price += grid_spacing
-            addition_prices.append(last_price)
-
-    if is_buy:
-        addition_prices.sort()
-    else:
-        addition_prices.sort(reverse=True)
+    addition_prices = build_addition_prices(is_buy, first_entry_price, grid_levels,
+                                            min_entry_spacing_percent, min_operational_additions)
 
     total_loss = 0.0
     # First trade
-    distance = abs(first_entry_price - hardstop)
+    distance = loss_distance(first_entry_price, hardstop, is_buy)
     ticks = distance / tick_size if tick_size > 0 else 0
     loss = ticks * tick_value * min_lot
     total_loss += loss
 
-    for price in addition_prices[:min_operational_additions]:
-        distance = abs(price - hardstop)
+    for price in addition_prices:
+        distance = loss_distance(price, hardstop, is_buy)
         ticks = distance / tick_size if tick_size > 0 else 0
         loss = ticks * tick_value * min_lot
         total_loss += loss
@@ -77,10 +103,15 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
     growth_participation = locked_profit * (growth_participation_percent / 100.0)
     total_allowed_loss = mor + unlocked_surplus + growth_participation
 
-    # Worst distance calculation
+    # Worst distance calculation. Use the real farthest structural addition
+    # level when available (grid_levels) instead of always assuming the
+    # synthetic min-spacing ladder — real S/R levels can sit much farther
+    # from first entry than a few min_entry_spacing_percent hops, and sizing
+    # against too-close an assumption overstates the affordable lot.
     hardstop_distance = first_entry_price * (max_expected_move_percent / 100.0)
-    grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
-    farthest_grid_distance = grid_spacing * (max_grid_levels - 1)
+    addition_prices = build_addition_prices(is_buy, first_entry_price, grid_levels,
+                                            min_entry_spacing_percent, max_grid_levels - 1)
+    farthest_grid_distance = abs(addition_prices[-1] - first_entry_price) if addition_prices else 0.0
     worst_distance = hardstop_distance + farthest_grid_distance
 
     ticks = worst_distance / tick_size
@@ -121,27 +152,14 @@ def compute_projected_loss_fixed_lot(lot_size, num_levels, is_buy, first_entry_p
         return 0.0
     hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
     total_loss = 0.0
-    distance = abs(first_entry_price - hardstop)
+    distance = loss_distance(first_entry_price, hardstop, is_buy)
     ticks = distance / tick_size
     total_loss += ticks * tick_value * lot_size
-    # Build addition prices
-    addition_prices = []
-    if grid_levels:
-        for level in grid_levels:
-            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
-                addition_prices.append(level['price'])
-            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
-                addition_prices.append(level['price'])
-    while len(addition_prices) < num_levels - 1:
-        grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
-        last_price = addition_prices[-1] if addition_prices else first_entry_price
-        if is_buy:
-            last_price -= grid_spacing
-        else:
-            last_price += grid_spacing
-        addition_prices.append(last_price)
-    for price in addition_prices[:num_levels - 1]:
-        distance = abs(price - hardstop)
+
+    addition_prices = build_addition_prices(is_buy, first_entry_price, grid_levels,
+                                            min_entry_spacing_percent, num_levels - 1)
+    for price in addition_prices:
+        distance = loss_distance(price, hardstop, is_buy)
         ticks = distance / tick_size
         total_loss += ticks * tick_value * lot_size
     return total_loss
@@ -154,27 +172,14 @@ def compute_projected_loss_for_curve(curve, is_buy, first_entry_price,
         return 0.0
     hardstop = first_entry_price * (1.0 - max_expected_move_percent / 100.0) if is_buy else first_entry_price * (1.0 + max_expected_move_percent / 100.0)
     total_loss = 0.0
-    distance = abs(first_entry_price - hardstop)
+    distance = loss_distance(first_entry_price, hardstop, is_buy)
     ticks = distance / tick_size
     total_loss += ticks * tick_value * curve[0]
-    addition_prices = []
-    if grid_levels:
-        for level in grid_levels:
-            if is_buy and not level['isHigh'] and level['price'] < first_entry_price:
-                addition_prices.append(level['price'])
-            elif not is_buy and level['isHigh'] and level['price'] > first_entry_price:
-                addition_prices.append(level['price'])
-    num_needed = len(curve) - 1
-    while len(addition_prices) < num_needed:
-        grid_spacing = first_entry_price * (min_entry_spacing_percent / 100.0)
-        last_price = addition_prices[-1] if addition_prices else first_entry_price
-        if is_buy:
-            last_price -= grid_spacing
-        else:
-            last_price += grid_spacing
-        addition_prices.append(last_price)
-    for i, price in enumerate(addition_prices[:num_needed]):
-        distance = abs(price - hardstop)
+
+    addition_prices = build_addition_prices(is_buy, first_entry_price, grid_levels,
+                                            min_entry_spacing_percent, len(curve) - 1)
+    for i, price in enumerate(addition_prices):
+        distance = loss_distance(price, hardstop, is_buy)
         ticks = distance / tick_size
         total_loss += ticks * tick_value * curve[i + 1]
     return total_loss
