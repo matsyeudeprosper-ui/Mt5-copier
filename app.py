@@ -68,14 +68,21 @@ DEFAULT_CONFIG = {
     "max_grid_levels": 6,
     "enable_flip_engine": False,
     "use_extreme_tracking": False,
-    "hardstop_lookback_days": 90,
-    "hardstop_percentile": 98.0,
-    "hardstop_forward_window": 12,
+    # Rare-move statistical engine: 24h basket horizon, multi-year lookback,
+    # percentile chosen for ~1 basket/day cadence (roughly once every few
+    # years), asymmetric smoothing (fast up / slow down).
+    "hardstop_lookback_days": 1460,
+    "hardstop_percentile": 99.8,
     "hardstop_atr_mult_d1": 4.0,
     "hardstop_atr_mult_h4": 2.5,
     "hardstop_spread_mult": 2.0,
-    "hardstop_min_clamp": 2.0,
-    "hardstop_max_clamp": 15.0
+    "hardstop_min_clamp": 1.5,
+    "hardstop_max_clamp": 25.0,
+    "hardstop_smoothing_up": 0.50,
+    "hardstop_smoothing_down": 0.10,
+    # Basket risk model — single source of truth for sizing.
+    "basket_lifetime_hours": 24.0,
+    "max_account_loss_percent_per_basket": 2.0
 }
 
 def load_config_from_supabase():
@@ -247,7 +254,8 @@ def calculate_lot():
                 "first_entry_price", "free_margin", "max_expected_move_percent",
                 "max_grid_levels", "max_recovery_additions", "min_operational_additions",
                 "min_entry_spacing_percent", "mor_safety_multiplier",
-                "growth_participation_percent", "grid_levels", "tick_value",
+                "growth_participation_percent", "max_account_loss_percent_per_basket",
+                "grid_levels", "tick_value",
                 "tick_size", "min_lot", "max_lot", "lot_step", "symbol"]
     for field in required:
         if field not in data:
@@ -268,6 +276,7 @@ def calculate_lot():
             min_entry_spacing_percent=data["min_entry_spacing_percent"],
             mor_safety_multiplier=data["mor_safety_multiplier"],
             growth_participation_percent=data["growth_participation_percent"],
+            max_account_loss_percent_per_basket=data["max_account_loss_percent_per_basket"],
             grid_levels=data["grid_levels"],
             tick_value=data["tick_value"],
             tick_size=data["tick_size"],
@@ -295,7 +304,8 @@ def calculate_curve():
                 "first_entry_price", "free_margin", "max_expected_move_percent",
                 "max_grid_levels", "max_recovery_additions", "min_operational_additions",
                 "min_entry_spacing_percent", "mor_safety_multiplier",
-                "growth_participation_percent", "grid_levels", "tick_value",
+                "growth_participation_percent", "max_account_loss_percent_per_basket",
+                "grid_levels", "tick_value",
                 "tick_size", "min_lot", "max_lot", "lot_step", "symbol"]
     for field in required:
         if field not in data:
@@ -316,6 +326,7 @@ def calculate_curve():
             min_entry_spacing_percent=data["min_entry_spacing_percent"],
             mor_safety_multiplier=data["mor_safety_multiplier"],
             growth_participation_percent=data["growth_participation_percent"],
+            max_account_loss_percent_per_basket=data["max_account_loss_percent_per_basket"],
             grid_levels=data["grid_levels"],
             tick_value=data["tick_value"],
             tick_size=data["tick_size"],

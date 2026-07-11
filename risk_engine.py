@@ -84,24 +84,23 @@ def calculate_dynamic_lot_size(equity, protected_floor, initial_account_equity,
                                max_expected_move_percent, max_grid_levels,
                                max_recovery_additions, min_operational_additions,
                                min_entry_spacing_percent, mor_safety_multiplier,
-                               growth_participation_percent, grid_levels,
+                               growth_participation_percent, max_account_loss_percent_per_basket,
+                               grid_levels,
                                tick_value, tick_size, min_lot, max_lot, lot_step, symbol):
     # Guard against zero tick_value (e.g., market closed or invalid symbol)
     if tick_value <= 0 or tick_size <= 0:
         return min_lot
 
-    unlocked_surplus = max(0, equity - protected_floor)
-
-    # Compute total allowed loss (always, not only when surplus > 0.01)
     is_buy = (direction == "buy")
-    mor = compute_minimum_operational_reserve(is_buy, max_expected_move_percent,
-                                              min_entry_spacing_percent, grid_levels,
-                                              min_operational_additions, mor_safety_multiplier,
-                                              first_entry_price, tick_value, tick_size, symbol)
 
-    locked_profit = max(0, protected_floor - initial_account_equity)
-    growth_participation = locked_profit * (growth_participation_percent / 100.0)
-    total_allowed_loss = mor + unlocked_surplus + growth_participation
+    # Single source of truth: size so that IF the rare move
+    # (max_expected_move_percent) actually happens, projected loss across the
+    # whole grid is ~max_account_loss_percent_per_basket of equity.
+    # mor_safety_multiplier / growth_participation_percent are accepted for
+    # backward compatibility and reporting only — they no longer influence
+    # sizing (see compute_minimum_operational_reserve, still available for
+    # reporting/dashboards, just not part of this budget).
+    total_allowed_loss = equity * (max_account_loss_percent_per_basket / 100.0)
 
     # Worst distance calculation. Use the real farthest structural addition
     # level when available (grid_levels) instead of always assuming the
@@ -190,7 +189,8 @@ def calculate_convex_lot_curve(equity, protected_floor, initial_account_equity,
                                max_expected_move_percent, max_grid_levels,
                                max_recovery_additions, min_operational_additions,
                                min_entry_spacing_percent, mor_safety_multiplier,
-                               growth_participation_percent, grid_levels,
+                               growth_participation_percent, max_account_loss_percent_per_basket,
+                               grid_levels,
                                tick_value, tick_size, min_lot, max_lot, lot_step, symbol,
                                curve_acceleration=1.35, protected_early_levels=2,
                                min_partial_capable_lot=0.02):
@@ -203,7 +203,8 @@ def calculate_convex_lot_curve(equity, protected_floor, initial_account_equity,
                                           max_expected_move_percent, max_grid_levels,
                                           max_recovery_additions, min_operational_additions,
                                           min_entry_spacing_percent, mor_safety_multiplier,
-                                          growth_participation_percent, grid_levels,
+                                          growth_participation_percent, max_account_loss_percent_per_basket,
+                                          grid_levels,
                                           tick_value, tick_size, min_lot, max_lot, lot_step, symbol)
     total_lot_budget = flat_lot * max_grid_levels
 
