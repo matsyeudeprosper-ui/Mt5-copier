@@ -381,6 +381,18 @@ def send_risk_notification():
         return jsonify({"error": "Internal server error"}), 500
 
 # ---------- PAIRING DECISION ENDPOINT ----------
+# DEPRECATED (as of the EA's pairing-engine redesign): the EA no longer calls
+# this route. Pairing decisions (which positions to close together during
+# recovery) are now made entirely client-side in the EA's PairingEngine.mqh -
+# a simple exhaustive search with no pressure score / stress tiers, replacing
+# the scoring model this route used to serve. Basket-close reporting (Telegram
+# notification, Supabase logging) is unaffected: it goes through /copier in
+# trade_endpoints.py, which was always independent of this route.
+# Left in place intentionally, unremoved, while the new local engine is
+# verified across several live recovery cycles - once confirmed, this route
+# and pairing_engine.py can be deleted along with the config plumbing that
+# only existed to feed it (ServerIntegration.mqh's old ServerGetPairingDecision
+# on the EA side is already gone).
 @app.route("/pairing-decision", methods=["POST"])
 def pairing_decision():
     data = request.get_json()

@@ -1,4 +1,16 @@
 """
+DEPRECATED - not called by the EA anymore.
+
+Pairing decisions moved fully client-side as of the EA's pairing-engine
+redesign: PairingEngine.mqh now does a simple exhaustive search (no pressure
+score, no stress tiers, no scoring model) and executes locally, no server
+round-trip. This module (and the /pairing-decision route in app.py that
+serves it) is kept temporarily, unremoved, while the new local engine is
+verified across several live recovery cycles - safe to delete once confirmed.
+Basket-close reporting (Telegram, Supabase) is unaffected by this deprecation;
+it goes through /copier in trade_endpoints.py, which never depended on this.
+
+Original docstring, for reference:
 PAIRING ENGINE MODE:
 - Generates deterministic pairing decisions
 - NEVER executes broker orders
